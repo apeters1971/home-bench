@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Homebench Controller</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="bg"></div>
+  <header class="top">
+    <div class="brand">
+      <span class="mark"></span>
+      <h1>Homebench</h1>
+    </div>
+    <div class="run-meta">
+      <div class="meta-block">
+        <span class="label">Elapsed</span>
+        <span id="elapsed" class="value mono">00:00:00</span>
+      </div>
+      <div class="meta-block">
+        <span class="label">Clients</span>
+        <span id="client-count" class="value mono">0</span>
+      </div>
+      <div class="meta-block wide">
+        <span class="label">Status</span>
+        <span id="status-text" class="value">Ready</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel controls">
+      <div class="phase-row" id="phase-row"></div>
+      <div class="actions">
+        <button id="btn-start" class="btn primary">Start</button>
+        <button id="btn-stop" class="btn danger" disabled>Stop</button>
+        <span id="percent" class="percent mono"></span>
+      </div>
+    </section>
+
+    <section class="panel charts">
+      <div class="chart-head">
+        <h2>IOPS</h2>
+        <span class="hint">30 minute history · create/delete count as write ops</span>
+      </div>
+      <canvas id="chart-iops" height="140"></canvas>
+      <div class="legend">
+        <span class="swatch write"></span> Write / Create
+        <span class="swatch read"></span> Read
+        <span class="swatch delete"></span> Delete
+      </div>
+
+      <div class="chart-head spaced">
+        <h2>Bandwidth</h2>
+        <span class="hint">bytes/sec observed by clients</span>
+      </div>
+      <canvas id="chart-bw" height="140"></canvas>
+      <div class="legend">
+        <span class="swatch write"></span> Write
+        <span class="swatch read"></span> Read
+      </div>
+    </section>
+
+    <div class="split">
+      <section class="panel config">
+        <h2>Global parameters</h2>
+        <form id="config-form">
+          <label>
+            Test name
+            <input name="test_name" type="text" required />
+          </label>
+          <label>
+            Directory prefixes <span class="hint">(one per line)</span>
+            <textarea name="prefixes" rows="4" required></textarea>
+          </label>
+          <div class="grid2">
+            <label>
+              File creation rate <span class="hint">files/s</span>
+              <input name="file_creation_rate" type="number" min="1" step="any" required />
+            </label>
+            <label>
+              File deletion rate <span class="hint">files/s</span>
+              <input name="file_deletion_rate" type="number" min="1" step="any" required />
+            </label>
+            <label>
+              Write bandwidth <span class="hint">MiB/s</span>
+              <input name="file_write_bandwidth_mib" type="number" min="1" step="any" required />
+            </label>
+            <label>
+              Read bandwidth <span class="hint">MiB/s</span>
+              <input name="file_read_bandwidth_mib" type="number" min="1" step="any" required />
+            </label>
+          </div>
+          <button type="submit" class="btn secondary">Save configuration</button>
+          <p id="config-msg" class="msg"></p>
+        </form>
+      </section>
+
+      <section class="panel clients">
+        <h2>Registered clients</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Hostname</th>
+                <th>Prefix</th>
+                <th>Status</th>
+                <th>Phase</th>
+              </tr>
+            </thead>
+            <tbody id="client-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
