@@ -30,6 +30,7 @@ type Orchestrator struct {
 	startedAt  *time.Time
 	statusText string
 	cancel     context.CancelFunc
+	phaseSpans []protocol.PhaseSpan
 
 	// filesCreatedApprox is updated from client status reports.
 	filesCreated int64
@@ -89,6 +90,8 @@ func (o *Orchestrator) Snapshot() protocol.UIState {
 	if o.startedAt != nil {
 		elapsed = time.Since(*o.startedAt).Seconds()
 	}
+	spans := make([]protocol.PhaseSpan, len(o.phaseSpans))
+	copy(spans, o.phaseSpans)
 	return protocol.UIState{
 		Config:      o.cfg,
 		Clients:     o.registry.List(),
@@ -98,6 +101,7 @@ func (o *Orchestrator) Snapshot() protocol.UIState {
 		StartedAt:   o.startedAt,
 		ElapsedSec:  elapsed,
 		History:     o.metrics.History(),
+		PhaseSpans:  spans,
 		PhaseOrder:  protocol.PhaseOrder,
 		StatusText:  o.statusText,
 		ClientCount: o.registry.Count(),
@@ -132,6 +136,7 @@ func (o *Orchestrator) Start() error {
 	o.phase = protocol.PhaseCreate
 	o.percent = 0
 	o.filesCreated = 0
+	o.phaseSpans = nil
 	o.statusText = "Starting create phase"
 	o.mu.Unlock()
 
@@ -154,6 +159,7 @@ func (o *Orchestrator) Stop() {
 	})
 	o.metrics.Freeze()
 	o.mu.Lock()
+	o.closePhaseSpanLocked(time.Now())
 	o.running = false
 	o.phase = protocol.PhaseStopped
 	o.percent = 0
@@ -171,15 +177,31 @@ func (o *Orchestrator) IsRunning() bool {
 func (o *Orchestrator) setPhase(phase protocol.Phase, percent int, text string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if phase != o.phase || len(o.phaseSpans) == 0 {
+		now := time.Now()
+		o.closePhaseSpanLocked(now)
+		o.phaseSpans = append(o.phaseSpans, protocol.PhaseSpan{
+			Phase: phase,
+			Start: now,
+		})
+	}
 	o.phase = phase
 	o.percent = percent
 	o.statusText = text
+}
+
+func (o *Orchestrator) closePhaseSpanLocked(at time.Time) {
+	if n := len(o.phaseSpans); n > 0 && o.phaseSpans[n-1].End == nil {
+		end := at
+		o.phaseSpans[n-1].End = &end
+	}
 }
 
 func (o *Orchestrator) finish(text string) {
 	o.metrics.Freeze()
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	o.closePhaseSpanLocked(time.Now())
 	o.running = false
 	o.phase = protocol.PhaseIdle
 	o.percent = 0

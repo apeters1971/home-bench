@@ -7,6 +7,15 @@ const PHASE_LABELS = {
   final_delete: "Final Delete",
 };
 
+const PHASE_BANDS = {
+  create:       { fill: "rgba(15, 122, 95, 0.13)",  stroke: "#0f7a5f", label: "Create" },
+  delete:       { fill: "rgba(180, 83, 9, 0.13)",   stroke: "#b45309", label: "Delete" },
+  write_bw:     { fill: "rgba(31, 95, 191, 0.13)",  stroke: "#1f5fbf", label: "Write BW" },
+  read_bw:      { fill: "rgba(14, 116, 144, 0.13)", stroke: "#0e7490", label: "Read BW" },
+  read_write:   { fill: "rgba(161, 98, 7, 0.15)",   stroke: "#a16207", label: "R+W" },
+  final_delete: { fill: "rgba(185, 28, 28, 0.12)",  stroke: "#b91c1c", label: "Final Del" },
+};
+
 const MiB = 1024 * 1024;
 
 const state = {
@@ -94,11 +103,20 @@ function render(snap) {
 
 function renderClients(clients) {
   const body = $("client-body");
+  const meta = $("client-list-meta");
+  const n = clients.length;
+  meta.textContent = n <= 10 ? `${n} client${n === 1 ? "" : "s"}` : `${n} clients · scroll for more`;
+
   const next = clients.map((c) =>
     [c.hostname, c.prefix, c.status, PHASE_LABELS[c.phase] || c.phase || ""].join("\0")
   ).join("\n");
   if (body.dataset.sig === next) return;
   body.dataset.sig = next;
+
+  // Preserve scroll position across live updates.
+  const wrap = body.closest(".table-wrap");
+  const scrollTop = wrap ? wrap.scrollTop : 0;
+
   body.innerHTML = "";
   for (const c of clients) {
     const tr = document.createElement("tr");
@@ -109,6 +127,7 @@ function renderClients(clients) {
       <td>${escapeHtml(PHASE_LABELS[c.phase] || c.phase || "")}</td>`;
     body.appendChild(tr);
   }
+  if (wrap) wrap.scrollTop = scrollTop;
 }
 
 function escapeHtml(s) {
@@ -119,22 +138,66 @@ function escapeHtml(s) {
 }
 
 function drawCharts(history) {
+  const spans = state.snapshot?.phase_spans || [];
   drawLineChart($("chart-iops"), history, [
     { key: "write_iops", color: "#0f7a5f" },
     { key: "read_iops", color: "#1f5fbf" },
     { key: "delete_iops", color: "#b45309" },
-  ]);
+  ], false, spans);
   drawLineChart($("chart-bw"), history, [
     { key: "write_bps", color: "#0f7a5f" },
     { key: "read_bps", color: "#1f5fbf" },
-  ], true);
+  ], true, spans);
 }
 
-function drawLineChart(canvas, history, series, isBytes) {
+function sampleTime(pt) {
+  return new Date(pt.timestamp).getTime();
+}
+
+function drawPhaseBands(ctx, spans, tMin, tMax, pad, plotW, plotH) {
+  if (!spans?.length || !(tMax > tMin)) return;
+  const labelY = 12;
+  const barTop = pad.t;
+  const barH = plotH;
+
+  for (const span of spans) {
+    const style = PHASE_BANDS[span.phase];
+    if (!style) continue;
+    const start = new Date(span.start).getTime();
+    const end = span.end ? new Date(span.end).getTime() : Date.now();
+    const x0 = pad.l + ((Math.max(start, tMin) - tMin) / (tMax - tMin)) * plotW;
+    const x1 = pad.l + ((Math.min(end, tMax) - tMin) / (tMax - tMin)) * plotW;
+    const w = Math.max(1, x1 - x0);
+    if (x1 < pad.l || x0 > pad.l + plotW) continue;
+
+    ctx.fillStyle = style.fill;
+    ctx.fillRect(x0, barTop, w, barH);
+
+    ctx.strokeStyle = style.stroke;
+    ctx.globalAlpha = 0.35;
+    ctx.beginPath();
+    ctx.moveTo(x0, barTop);
+    ctx.lineTo(x0, barTop + barH);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    if (w >= 36) {
+      ctx.fillStyle = style.stroke;
+      ctx.font = "600 10px Sora, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      const lx = x0 + w / 2;
+      ctx.fillText(style.label, lx, labelY);
+    }
+  }
+  ctx.textBaseline = "alphabetic";
+}
+
+function drawLineChart(canvas, history, series, isBytes, spans) {
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
   const width = Math.max(320, Math.floor(rect.width));
-  const height = 140;
+  const height = 170;
   const bufW = Math.floor(width * dpr);
   const bufH = Math.floor(height * dpr);
   // Only reset the bitmap when the display size changes — avoids layout jumps.
@@ -146,9 +209,38 @@ function drawLineChart(canvas, history, series, isBytes) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
 
-  const pad = { l: 54, r: 12, t: 12, b: 24 };
+  const pad = { l: 54, r: 12, t: 26, b: 24 };
   const plotW = width - pad.l - pad.r;
   const plotH = height - pad.t - pad.b;
+
+  if (!history.length) {
+    ctx.strokeStyle = "rgba(20,32,28,0.08)";
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) {
+      const y = pad.t + (plotH * i) / 4;
+      ctx.beginPath();
+      ctx.moveTo(pad.l, y);
+      ctx.lineTo(pad.l + plotW, y);
+      ctx.stroke();
+    }
+    ctx.fillStyle = "#5c6b64";
+    ctx.font = "12px Sora, sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText("Waiting for metrics…", pad.l + 8, pad.t + 20);
+    return;
+  }
+
+  let tMin = sampleTime(history[0]);
+  let tMax = sampleTime(history[history.length - 1]);
+  if (state.snapshot?.started_at) {
+    tMin = Math.min(tMin, new Date(state.snapshot.started_at).getTime());
+  }
+  if (state.snapshot?.running) {
+    tMax = Math.max(tMax, Date.now());
+  }
+  if (!(tMax > tMin)) tMax = tMin + 1;
+
+  drawPhaseBands(ctx, spans, tMin, tMax, pad, plotW, plotH);
 
   ctx.strokeStyle = "rgba(20,32,28,0.08)";
   ctx.lineWidth = 1;
@@ -158,13 +250,6 @@ function drawLineChart(canvas, history, series, isBytes) {
     ctx.moveTo(pad.l, y);
     ctx.lineTo(pad.l + plotW, y);
     ctx.stroke();
-  }
-
-  if (!history.length) {
-    ctx.fillStyle = "#5c6b64";
-    ctx.font = "12px Sora, sans-serif";
-    ctx.fillText("Waiting for metrics…", pad.l + 8, pad.t + 20);
-    return;
   }
 
   let maxY = 1;
@@ -183,29 +268,19 @@ function drawLineChart(canvas, history, series, isBytes) {
     ctx.fillText(label, pad.l - 8, y);
   }
 
-  const n = history.length;
+  const xAt = (t) => pad.l + ((t - tMin) / (tMax - tMin)) * plotW;
+
   for (const s of series) {
     ctx.beginPath();
     ctx.strokeStyle = s.color;
     ctx.lineWidth = 2;
     history.forEach((pt, i) => {
-      const x = pad.l + (plotW * i) / Math.max(1, n - 1);
+      const x = xAt(sampleTime(pt));
       const y = pad.t + plotH - ((Number(pt[s.key]) || 0) / maxY) * plotH;
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     });
     ctx.stroke();
-  }
-
-  // Phase window highlight using last point time span — subtle right edge glow when running.
-  if (state.snapshot?.running) {
-    const win = Math.min(n, 60);
-    const x0 = pad.l + (plotW * (n - win)) / Math.max(1, n - 1);
-    const grad = ctx.createLinearGradient(x0, 0, pad.l + plotW, 0);
-    grad.addColorStop(0, "rgba(15,122,95,0)");
-    grad.addColorStop(1, "rgba(15,122,95,0.08)");
-    ctx.fillStyle = grad;
-    ctx.fillRect(x0, pad.t, pad.l + plotW - x0, plotH);
   }
 }
 

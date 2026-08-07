@@ -73,7 +73,10 @@
       </section>
 
       <section class="panel clients">
-        <h2>Registered clients</h2>
+        <div class="clients-head">
+          <h2>Registered clients</h2>
+          <span id="client-list-meta" class="hint">0 shown</span>
+        </div>
         <div class="table-wrap">
           <table>
             <thead>
@@ -104,7 +107,7 @@
         <h2>IOPS</h2>
         <span class="hint">30 minute history · create/delete count as write ops</span>
       </div>
-      <canvas id="chart-iops" width="800" height="140"></canvas>
+      <canvas id="chart-iops" width="800" height="170"></canvas>
       <div class="legend">
         <span class="swatch write"></span> Write / Create
         <span class="swatch read"></span> Read
@@ -115,7 +118,7 @@
         <h2>Bandwidth</h2>
         <span class="hint">bytes/sec observed by clients</span>
       </div>
-      <canvas id="chart-bw" width="800" height="140"></canvas>
+      <canvas id="chart-bw" width="800" height="170"></canvas>
       <div class="legend">
         <span class="swatch write"></span> Write
         <span class="swatch read"></span> Read

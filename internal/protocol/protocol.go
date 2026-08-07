@@ -157,19 +157,27 @@ type StopMsg struct {
 	Cleanup bool `json:"cleanup"`
 }
 
+// PhaseSpan marks when a major test phase was active (for chart overlays).
+type PhaseSpan struct {
+	Phase Phase      `json:"phase"`
+	Start time.Time  `json:"start"`
+	End   *time.Time `json:"end,omitempty"` // nil = still open
+}
+
 // UIState is the snapshot served to the Web UI.
 type UIState struct {
-	Config       Config             `json:"config"`
-	Clients      []ClientInfo       `json:"clients"`
-	Running      bool               `json:"running"`
-	Phase        Phase              `json:"phase"`
-	Percent      int                `json:"percent"`
-	StartedAt    *time.Time         `json:"started_at,omitempty"`
-	ElapsedSec   float64            `json:"elapsed_sec"`
-	History      []AggregatedSample `json:"history"`
-	PhaseOrder   []Phase            `json:"phase_order"`
-	StatusText   string             `json:"status_text"`
-	ClientCount  int                `json:"client_count"`
+	Config      Config             `json:"config"`
+	Clients     []ClientInfo       `json:"clients"`
+	Running     bool               `json:"running"`
+	Phase       Phase              `json:"phase"`
+	Percent     int                `json:"percent"`
+	StartedAt   *time.Time         `json:"started_at,omitempty"`
+	ElapsedSec  float64            `json:"elapsed_sec"`
+	History     []AggregatedSample `json:"history"`
+	PhaseSpans  []PhaseSpan        `json:"phase_spans"`
+	PhaseOrder  []Phase            `json:"phase_order"`
+	StatusText  string             `json:"status_text"`
+	ClientCount int                `json:"client_count"`
 }
 
 // PhaseOrder is the fixed sequence of a full run.
