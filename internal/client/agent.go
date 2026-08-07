@@ -89,8 +89,19 @@ func (a *Agent) session(ctx context.Context, wsURL string) error {
 	a.mu.Unlock()
 	defer func() {
 		a.stopWork()
+		a.mu.Lock()
+		if a.conn == conn {
+			a.conn = nil
+		}
+		a.mu.Unlock()
 		_ = conn.Close()
 	}()
+
+	_ = conn.SetReadDeadline(time.Now().Add(protocol.WSReadTimeout))
+	conn.SetPongHandler(func(string) error {
+		_ = conn.SetReadDeadline(time.Now().Add(protocol.WSReadTimeout))
+		return nil
+	})
 
 	reg := protocol.Envelope{
 		Type: "register",
@@ -99,14 +110,15 @@ func (a *Agent) session(ctx context.Context, wsURL string) error {
 			ID:       a.clientID,
 		},
 	}
-	if err := conn.WriteJSON(reg); err != nil {
+	if err := a.writeJSON(conn, reg); err != nil {
 		return err
 	}
 
 	sessCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	go a.metricsLoop(sessCtx)
+	go a.metricsLoop(sessCtx, conn)
+	go a.pingLoop(sessCtx, conn)
 	go a.commandLoop(sessCtx)
 
 	for {
@@ -115,6 +127,7 @@ func (a *Agent) session(ctx context.Context, wsURL string) error {
 			cancel()
 			return err
 		}
+		_ = conn.SetReadDeadline(time.Now().Add(protocol.WSReadTimeout))
 		switch env.Type {
 		case "welcome":
 			if env.Welcome == nil {
@@ -215,7 +228,26 @@ func (a *Agent) stopWork() {
 	}
 }
 
-func (a *Agent) metricsLoop(ctx context.Context) {
+func (a *Agent) pingLoop(ctx context.Context, conn *websocket.Conn) {
+	t := time.NewTicker(protocol.WSPingInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			a.mu.Lock()
+			err := conn.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(5*time.Second))
+			a.mu.Unlock()
+			if err != nil {
+				_ = conn.Close()
+				return
+			}
+		}
+	}
+}
+
+func (a *Agent) metricsLoop(ctx context.Context, conn *websocket.Conn) {
 	t := time.NewTicker(protocol.MetricsInterval)
 	defer t.Stop()
 	for {
@@ -226,37 +258,39 @@ func (a *Agent) metricsLoop(ctx context.Context) {
 			sample := a.stats.SnapshotAndReset()
 			a.mu.Lock()
 			sample.ClientID = a.clientID
-			conn := a.conn
 			a.mu.Unlock()
-			if sample.ClientID == "" || conn == nil {
+			if sample.ClientID == "" {
 				continue
 			}
-			// Skip empty idle samples to reduce noise, but keep a heartbeat via status.
-			if sample.ReadOps == 0 && sample.WriteOps == 0 && sample.CreateOps == 0 &&
-				sample.DeleteOps == 0 && sample.ReadBytes == 0 && sample.WriteBytes == 0 {
-				continue
-			}
+			// Always send — zeros keep the controller from pruning during quiet
+			// delete/wait gaps and keep the UI history advancing.
 			env := protocol.Envelope{Type: "metrics", Metrics: &sample}
-			a.mu.Lock()
-			err := conn.WriteJSON(env)
-			a.mu.Unlock()
-			if err != nil {
+			if err := a.writeJSON(conn, env); err != nil {
 				return
 			}
 		}
 	}
 }
 
-func (a *Agent) sendStatus(status string, phase protocol.Phase, percent int, detail string, files int64) {
+func (a *Agent) writeJSON(conn *websocket.Conn, env protocol.Envelope) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.conn == nil || a.clientID == "" {
+	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	return conn.WriteJSON(env)
+}
+
+func (a *Agent) sendStatus(status string, phase protocol.Phase, percent int, detail string, files int64) {
+	a.mu.Lock()
+	conn := a.conn
+	id := a.clientID
+	a.mu.Unlock()
+	if conn == nil || id == "" {
 		return
 	}
 	env := protocol.Envelope{
 		Type: "status",
 		Status: &protocol.StatusMsg{
-			ClientID: a.clientID,
+			ClientID: id,
 			Status:   status,
 			Phase:    phase,
 			Percent:  percent,
@@ -264,5 +298,5 @@ func (a *Agent) sendStatus(status string, phase protocol.Phase, percent int, det
 			Files:    files,
 		},
 	}
-	_ = a.conn.WriteJSON(env)
+	_ = a.writeJSON(conn, env)
 }

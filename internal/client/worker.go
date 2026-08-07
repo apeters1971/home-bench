@@ -421,7 +421,7 @@ func (w *Worker) Cleanup(prefix, testName string) error {
 
 func durationOf(cmd protocol.PhaseCommand) time.Duration {
 	if cmd.Duration <= 0 {
-		return protocol.CreateStepDuration
+		return protocol.DefaultPhaseStepDuration
 	}
 	return time.Duration(cmd.Duration * float64(time.Second))
 }

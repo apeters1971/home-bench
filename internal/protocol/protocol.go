@@ -28,10 +28,14 @@ const (
 	MetricsInterval = time.Second
 	// HistoryRetention is how long the controller keeps metric samples.
 	HistoryRetention = 30 * time.Minute
-	// CreateStepDuration is time spent at each create/delete ramp step.
-	CreateStepDuration = time.Minute
-	// BandwidthStepDuration is time spent at each bandwidth ramp step.
-	BandwidthStepDuration = 30 * time.Second
+	// DefaultPhaseStepDuration is the default time spent at each 10% ramp step.
+	DefaultPhaseStepDuration = 30 * time.Second
+	// WSPingInterval is how often ping frames are sent to keep NAT mappings alive.
+	WSPingInterval = 20 * time.Second
+	// WSReadTimeout is the idle read deadline; refreshed on pong/data.
+	WSReadTimeout = 60 * time.Second
+	// ClientStaleAfter removes registry entries with no touch for this long.
+	ClientStaleAfter = 90 * time.Second
 )
 
 // Config is the centrally configured test parameters.
@@ -42,6 +46,7 @@ type Config struct {
 	FileDeletionRate   float64  `json:"file_deletion_rate"`   // files/sec global
 	FileWriteBandwidth float64  `json:"file_write_bandwidth"` // bytes/sec global
 	FileReadBandwidth  float64  `json:"file_read_bandwidth"`  // bytes/sec global
+	PhaseStepSeconds   float64  `json:"phase_step_seconds"`   // seconds at each 10% ramp step
 }
 
 // DefaultConfig returns sensible starting values.
@@ -53,7 +58,16 @@ func DefaultConfig() Config {
 		FileDeletionRate:   1000,
 		FileWriteBandwidth: 500 * 1024 * 1024, // 500 MiB/s
 		FileReadBandwidth:  500 * 1024 * 1024,
+		PhaseStepSeconds:   DefaultPhaseStepDuration.Seconds(),
 	}
+}
+
+// PhaseStepDuration returns the configured ramp-step length.
+func (c Config) PhaseStepDuration() time.Duration {
+	if c.PhaseStepSeconds <= 0 {
+		return DefaultPhaseStepDuration
+	}
+	return time.Duration(c.PhaseStepSeconds * float64(time.Second))
 }
 
 // ClientInfo describes a registered client.

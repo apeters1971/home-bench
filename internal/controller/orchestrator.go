@@ -65,6 +65,12 @@ func (o *Orchestrator) SetConfig(cfg protocol.Config) error {
 	if cfg.FileWriteBandwidth <= 0 || cfg.FileReadBandwidth <= 0 {
 		return fmt.Errorf("bandwidth values must be > 0")
 	}
+	if cfg.PhaseStepSeconds <= 0 {
+		cfg.PhaseStepSeconds = protocol.DefaultPhaseStepDuration.Seconds()
+	}
+	if cfg.PhaseStepSeconds < 1 {
+		return fmt.Errorf("phase_step_seconds must be >= 1")
+	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.running {
@@ -193,43 +199,44 @@ func (o *Orchestrator) run(ctx context.Context, cfg protocol.Config, nClients in
 	deleteRate := o.perClient(cfg.FileDeletionRate, nClients)
 	writeBW := o.perClient(cfg.FileWriteBandwidth, nClients)
 	readBW := o.perClient(cfg.FileReadBandwidth, nClients)
+	step := cfg.PhaseStepDuration()
 
-	log.Printf("orchestrator: start with %d clients create=%.1f/s delete=%.1f/s write=%.0f B/s read=%.0f B/s",
-		nClients, createRate, deleteRate, writeBW, readBW)
+	log.Printf("orchestrator: start with %d clients step=%s create=%.1f/s delete=%.1f/s write=%.0f B/s read=%.0f B/s",
+		nClients, step, createRate, deleteRate, writeBW, readBW)
 
 	// 1) Create ramp
-	if err := o.runRamp(ctx, protocol.PhaseCreate, createRate, protocol.CreateFileSize, protocol.CreateStepDuration); err != nil {
+	if err := o.runRamp(ctx, protocol.PhaseCreate, createRate, protocol.CreateFileSize, step); err != nil {
 		return
 	}
 
 	// 2) Delete ramp (full ladder + extra 100% sweep for leftovers)
-	if err := o.runRamp(ctx, protocol.PhaseDelete, deleteRate, 0, protocol.CreateStepDuration); err != nil {
+	if err := o.runRamp(ctx, protocol.PhaseDelete, deleteRate, 0, step); err != nil {
 		return
 	}
-	if err := o.sendAndWait(ctx, protocol.PhaseDelete, 100, deleteRate, 0, 0, protocol.CreateStepDuration); err != nil {
+	if err := o.sendAndWait(ctx, protocol.PhaseDelete, 100, deleteRate, 0, 0, step); err != nil {
 		return
 	}
 
 	// 3) Write bandwidth
-	if err := o.runRamp(ctx, protocol.PhaseWriteBW, writeBW, protocol.BandwidthFileSize, protocol.BandwidthStepDuration); err != nil {
+	if err := o.runRamp(ctx, protocol.PhaseWriteBW, writeBW, protocol.BandwidthFileSize, step); err != nil {
 		return
 	}
 
 	// 4) Read bandwidth
-	if err := o.runRamp(ctx, protocol.PhaseReadBW, readBW, protocol.BandwidthFileSize, protocol.BandwidthStepDuration); err != nil {
+	if err := o.runRamp(ctx, protocol.PhaseReadBW, readBW, protocol.BandwidthFileSize, step); err != nil {
 		return
 	}
 
 	// 5) Overlapped read+write at the same downscaled ramp targets
-	if err := o.runRamp2(ctx, protocol.PhaseReadWrite, writeBW, readBW, protocol.BandwidthFileSize, protocol.BandwidthStepDuration); err != nil {
+	if err := o.runRamp2(ctx, protocol.PhaseReadWrite, writeBW, readBW, protocol.BandwidthFileSize, step); err != nil {
 		return
 	}
 
 	// 6) Final delete
-	if err := o.runRamp(ctx, protocol.PhaseFinalDelete, deleteRate, 0, protocol.CreateStepDuration); err != nil {
+	if err := o.runRamp(ctx, protocol.PhaseFinalDelete, deleteRate, 0, step); err != nil {
 		return
 	}
-	_ = o.sendAndWait(ctx, protocol.PhaseFinalDelete, 100, deleteRate, 0, 0, protocol.CreateStepDuration)
+	_ = o.sendAndWait(ctx, protocol.PhaseFinalDelete, 100, deleteRate, 0, 0, step)
 }
 
 func (o *Orchestrator) runRamp(ctx context.Context, phase protocol.Phase, baseRate float64, fileSize int64, step time.Duration) error {

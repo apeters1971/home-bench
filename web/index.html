@@ -62,6 +62,10 @@
               Read bandwidth <span class="hint">MiB/s</span>
               <input name="file_read_bandwidth_mib" type="number" min="1" step="any" required />
             </label>
+            <label>
+              Phase step duration <span class="hint">seconds at each 10% step</span>
+              <input name="phase_step_seconds" type="number" min="1" step="any" required />
+            </label>
           </div>
           <button type="submit" class="btn secondary">Save configuration</button>
           <p id="config-msg" class="msg"></p>

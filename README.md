@@ -32,12 +32,12 @@ Open `http://CONTROLLER:8080`.
 
 | Phase | Intensity | Step length | Notes |
 |-------|-----------|-------------|-------|
-| Create | 10→100% | 60s | 4 KiB files under `prefix/testname/hostname/shard1/shard2/fileindex` |
-| Delete | 10→100% (+ extra 100%) | 60s | Removes created files; path list kept for bandwidth phases |
-| Write BW | 10→100% | 30s | Rewrites paths as 64 MiB files |
-| Read BW | 10→100% | 30s | Reads those files |
-| Read+Write | 10→100% | 30s | Concurrent read and write at their configured rates |
-| Final Delete | 10→100% (+ extra 100%) | 60s | Removes remaining files |
+| Create | 10→100% | configurable (default 30s) | 4 KiB files under `prefix/testname/hostname/shard1/shard2/fileindex` |
+| Delete | 10→100% (+ extra 100%) | same | Removes created files; path list kept for bandwidth phases |
+| Write BW | 10→100% | same | Rewrites paths as 64 MiB files |
+| Read BW | 10→100% | same | Reads those files |
+| Read+Write | 10→100% | same | Concurrent read and write at their configured rates |
+| Final Delete | 10→100% (+ extra 100%) | same | Removes remaining files |
 
 4. **Stop** cancels the run and tells every client to delete `prefix/testname/hostname/`.
 5. The UI shows a 30-minute history of aggregate IOPS and bandwidth, the active phase, and elapsed time.
@@ -50,6 +50,7 @@ Open `http://CONTROLLER:8080`.
 - Global file deletion rate (files/s)
 - Global write bandwidth (MiB/s)
 - Global read bandwidth (MiB/s)
+- Phase step duration (seconds at each 10% ramp step; default 30)
 
 ## Batch job example
 

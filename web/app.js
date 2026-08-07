@@ -55,6 +55,7 @@ function applyConfigForm(cfg) {
   form.file_deletion_rate.value = cfg.file_deletion_rate ?? "";
   form.file_write_bandwidth_mib.value = ((cfg.file_write_bandwidth || 0) / MiB).toFixed(1);
   form.file_read_bandwidth_mib.value = ((cfg.file_read_bandwidth || 0) / MiB).toFixed(1);
+  form.phase_step_seconds.value = cfg.phase_step_seconds ?? 30;
 }
 
 function render(snap) {
@@ -221,6 +222,7 @@ async function saveConfig(ev) {
     file_deletion_rate: Number(form.file_deletion_rate.value),
     file_write_bandwidth: Number(form.file_write_bandwidth_mib.value) * MiB,
     file_read_bandwidth: Number(form.file_read_bandwidth_mib.value) * MiB,
+    phase_step_seconds: Number(form.phase_step_seconds.value),
   };
   const res = await fetch("/api/config", {
     method: "PUT",
