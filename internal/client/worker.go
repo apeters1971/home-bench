@@ -38,9 +38,10 @@ func (s *Stats) SnapshotAndReset() protocol.MetricSample {
 
 // FileLedger tracks files this client created so delete/bw/read can target them.
 type FileLedger struct {
-	mu      sync.Mutex
+	mu     sync.Mutex
 	indices []int64
-	next    int64
+	next   int64
+	delPos int // persistent cursor across delete ramp steps
 }
 
 func NewFileLedger() *FileLedger {
@@ -78,15 +79,10 @@ func (l *FileLedger) Snapshot() []int64 {
 	return out
 }
 
-func (l *FileLedger) Pop() (int64, bool) {
+func (l *FileLedger) ResetDeleteCursor() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if len(l.indices) == 0 {
-		return 0, false
-	}
-	idx := l.indices[len(l.indices)-1]
-	l.indices = l.indices[:len(l.indices)-1]
-	return idx, true
+	l.delPos = 0
 }
 
 func (l *FileLedger) Clear() {
@@ -94,6 +90,48 @@ func (l *FileLedger) Clear() {
 	defer l.mu.Unlock()
 	l.indices = l.indices[:0]
 	l.next = 0
+	l.delPos = 0
+}
+
+// NextExistingPath finds the next ledger path that still exists.
+// removeFromLedger=true pops it (final delete); false only advances the cursor
+// so mid-test delete can keep paths for later bandwidth phases.
+func (l *FileLedger) NextExistingPath(prefix, testName, hostname string, removeFromLedger bool) (string, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.indices) == 0 {
+		return "", false
+	}
+
+	scanned := 0
+	for scanned < len(l.indices) {
+		if l.delPos >= len(l.indices) {
+			if removeFromLedger {
+				return "", false
+			}
+			// One wrap to catch leftovers after a partial first pass.
+			l.delPos = 0
+		}
+		idx := l.indices[l.delPos]
+		path := FilePath(prefix, testName, hostname, idx)
+		if _, err := os.Stat(path); err != nil {
+			// Missing — drop stale entries during final delete; skip during mid-delete.
+			if removeFromLedger {
+				l.indices = append(l.indices[:l.delPos], l.indices[l.delPos+1:]...)
+			} else {
+				l.delPos++
+			}
+			scanned++
+			continue
+		}
+		if removeFromLedger {
+			l.indices = append(l.indices[:l.delPos], l.indices[l.delPos+1:]...)
+		} else {
+			l.delPos++
+		}
+		return path, true
+	}
+	return "", false
 }
 
 // Worker executes a single phase command until duration elapses or ctx cancels.
@@ -102,7 +140,6 @@ type Worker struct {
 	Prefix   string
 	Ledger   *FileLedger
 	Stats    *Stats
-	bufPool  sync.Pool
 }
 
 func NewWorker(hostname, prefix string, ledger *FileLedger, stats *Stats) *Worker {
@@ -111,16 +148,13 @@ func NewWorker(hostname, prefix string, ledger *FileLedger, stats *Stats) *Worke
 		Prefix:   prefix,
 		Ledger:   ledger,
 		Stats:    stats,
-		bufPool: sync.Pool{New: func() any {
-			b := make([]byte, 1024*1024)
-			return &b
-		}},
 	}
 }
 
 func (w *Worker) Run(ctx context.Context, cmd protocol.PhaseCommand) error {
 	switch cmd.Phase {
 	case protocol.PhaseCreate:
+		w.Ledger.ResetDeleteCursor()
 		return w.runCreate(ctx, cmd)
 	case protocol.PhaseDelete, protocol.PhaseFinalDelete:
 		return w.runDelete(ctx, cmd)
@@ -182,12 +216,7 @@ func (w *Worker) runDelete(ctx context.Context, cmd protocol.PhaseCommand) error
 		return sleepCtx(ctx, durationOf(cmd))
 	}
 	deadline := time.Now().Add(durationOf(cmd))
-
-	// Mid-test delete keeps the ledger so later bandwidth phases reuse the same paths.
-	// Final delete clears the ledger as files are removed.
-	keepLedger := cmd.Phase == protocol.PhaseDelete
-	indices := w.Ledger.Snapshot()
-	pos := len(indices) - 1
+	removeFromLedger := cmd.Phase == protocol.PhaseFinalDelete
 
 	var deleted float64
 	start := time.Now()
@@ -209,33 +238,21 @@ func (w *Worker) runDelete(ctx context.Context, cmd protocol.PhaseCommand) error
 			continue
 		}
 
-		var path string
-		if keepLedger {
-			if pos < 0 {
-				p, ok := w.nextOnDisk(cmd)
-				if !ok {
-					return nil
-				}
-				path = p
-			} else {
-				path = FilePath(cmd.Prefix, cmd.TestName, w.Hostname, indices[pos])
-				pos--
-			}
-		} else {
-			idx, ok := w.Ledger.Pop()
+		path, ok := w.Ledger.NextExistingPath(cmd.Prefix, cmd.TestName, w.Hostname, removeFromLedger)
+		if !ok {
+			path, ok = w.nextOnDisk(cmd)
 			if !ok {
-				p, ok := w.nextOnDisk(cmd)
-				if !ok {
-					return nil
+				// Nothing left — wait out the step so the ramp stays aligned.
+				if err := sleepCtx(ctx, 50*time.Millisecond); err != nil {
+					return err
 				}
-				path = p
-			} else {
-				path = FilePath(cmd.Prefix, cmd.TestName, w.Hostname, idx)
+				continue
 			}
 		}
-		if err := os.Remove(path); err == nil {
-			w.Stats.DeleteOps.Add(1)
+		if err := os.Remove(path); err != nil {
+			continue
 		}
+		w.Stats.DeleteOps.Add(1)
 		deleted++
 	}
 }
@@ -289,14 +306,12 @@ func (w *Worker) runReadWrite(ctx context.Context, cmd protocol.PhaseCommand) er
 func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, doWrite, doRead bool) error {
 	indices := w.Ledger.Snapshot()
 	if len(indices) == 0 {
-		// Seed a modest working set if create phase produced no ledger entries.
 		for i := int64(0); i < 64; i++ {
 			idx := w.Ledger.NextIndex()
 			w.Ledger.Add(idx)
 		}
 		indices = w.Ledger.Snapshot()
 	}
-	// Cap working set so 64 MiB rewrites cannot fill the filesystem unboundedly.
 	const maxBWFiles = 256
 	if len(indices) > maxBWFiles {
 		indices = indices[:maxBWFiles]
@@ -312,18 +327,79 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 	}
 
 	deadline := time.Now().Add(durationOf(cmd))
-	bufPtr := w.bufPool.Get().(*[]byte)
-	buf := *bufPtr
-	defer w.bufPool.Put(bufPtr)
+	// O_DIRECT requires aligned buffers and transfer sizes.
+	buf := alignedBuffer(1024 * 1024)
+	if fileSize%int64(directAlign) != 0 {
+		fileSize = (fileSize / int64(directAlign)) * int64(directAlign)
+		if fileSize == 0 {
+			fileSize = int64(directAlign)
+		}
+	}
 
-	// Fill buffer once for writes.
 	if doWrite {
 		_, _ = rand.Read(buf[:min(len(buf), 4096)])
 	}
 
-	var cursor int
-	var transferred float64
-	start := time.Now()
+	var (
+		cursor      int
+		transferred float64
+		start       = time.Now()
+		file        *os.File
+		fileOff     int64
+		writing     bool
+	)
+	closeFile := func() {
+		if file != nil {
+			_ = file.Close()
+			file = nil
+		}
+		fileOff = 0
+		writing = false
+	}
+	defer closeFile()
+
+	openNext := func() error {
+		closeFile()
+		idx := indices[cursor%len(indices)]
+		cursor++
+		path := FilePath(cmd.Prefix, cmd.TestName, w.Hostname, idx)
+		if doWrite {
+			if err := EnsureParent(path); err != nil {
+				return err
+			}
+			f, err := openDirectWrite(path)
+			if err != nil {
+				// Fallback if the FS rejects O_DIRECT.
+				f, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+				if err != nil {
+					return err
+				}
+			}
+			file = f
+			writing = true
+			return nil
+		}
+		f, err := openDirectRead(path)
+		if err != nil {
+			// File may not exist yet — seed with Direct I/O, then reopen for read.
+			if err := EnsureParent(path); err != nil {
+				return err
+			}
+			if err := writeFileDirect(path, buf, fileSize); err != nil {
+				return err
+			}
+			f, err = openDirectRead(path)
+			if err != nil {
+				f, err = os.Open(path)
+				if err != nil {
+					return err
+				}
+			}
+		}
+		file = f
+		writing = false
+		return nil
+	}
 
 	for {
 		if time.Now().After(deadline) {
@@ -335,8 +411,6 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 		default:
 		}
 
-		// Pace against elapsed time so slow 64 MiB ops cannot reset a
-		// per-second window and run uncapped (common with many clients).
 		elapsed := time.Since(start).Seconds()
 		if elapsed < 0.001 {
 			elapsed = 0.001
@@ -348,36 +422,100 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 			continue
 		}
 
-		idx := indices[cursor%len(indices)]
-		cursor++
-		path := FilePath(cmd.Prefix, cmd.TestName, w.Hostname, idx)
-
-		if doWrite {
-			if err := EnsureParent(path); err != nil {
+		if file == nil {
+			if err := openNext(); err != nil {
+				if err := sleepCtx(ctx, 5*time.Millisecond); err != nil {
+					return err
+				}
 				continue
 			}
-			n, err := writeFileSized(path, buf, fileSize)
-			if err == nil {
+		}
+
+		chunk := int64(len(buf))
+		if writing {
+			remain := fileSize - fileOff
+			if remain <= 0 {
 				w.Stats.WriteOps.Add(1)
-				w.Stats.WriteBytes.Add(n)
+				closeFile()
+				continue
+			}
+			if chunk > remain {
+				chunk = remain
+			}
+			// Keep Direct I/O transfers aligned.
+			if chunk%int64(directAlign) != 0 {
+				chunk = (chunk / int64(directAlign)) * int64(directAlign)
+				if chunk == 0 {
+					closeFile()
+					continue
+				}
+			}
+			n, err := file.Write(buf[:chunk])
+			if n > 0 {
+				fileOff += int64(n)
 				transferred += float64(n)
+				w.Stats.WriteBytes.Add(int64(n))
+			}
+			if err != nil {
+				closeFile()
+				continue
+			}
+			if fileOff >= fileSize {
+				w.Stats.WriteOps.Add(1)
+				closeFile()
+			}
+			continue
+		}
+
+		// Read path — Direct I/O streamed in aligned chunks.
+		remain := fileSize - fileOff
+		if remain <= 0 {
+			if fileOff > 0 {
+				w.Stats.ReadOps.Add(1)
+			}
+			closeFile()
+			continue
+		}
+		if chunk > remain {
+			chunk = remain
+		}
+		if chunk%int64(directAlign) != 0 {
+			chunk = (chunk / int64(directAlign)) * int64(directAlign)
+			if chunk == 0 {
+				if fileOff > 0 {
+					w.Stats.ReadOps.Add(1)
+				}
+				closeFile()
+				continue
 			}
 		}
-		if doRead {
-			n, err := readFileFull(path, buf)
-			if err == nil {
+		n, err := file.Read(buf[:chunk])
+		if n > 0 {
+			transferred += float64(n)
+			w.Stats.ReadBytes.Add(int64(n))
+			fileOff += int64(n)
+		}
+		if err == io.EOF || fileOff >= fileSize {
+			if fileOff > 0 {
 				w.Stats.ReadOps.Add(1)
-				w.Stats.ReadBytes.Add(n)
-				transferred += float64(n)
 			}
+			closeFile()
+			continue
+		}
+		if err != nil {
+			closeFile()
+			continue
 		}
 	}
 }
 
-func writeFileSized(path string, buf []byte, size int64) (int64, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+func writeFileDirect(path string, buf []byte, size int64) error {
+	f, err := openDirectWrite(path)
 	if err != nil {
-		return 0, err
+		f, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		if err != nil {
+			return err
+		}
 	}
 	defer f.Close()
 	var written int64
@@ -386,32 +524,19 @@ func writeFileSized(path string, buf []byte, size int64) (int64, error) {
 		if size-written < chunk {
 			chunk = size - written
 		}
+		if chunk%int64(directAlign) != 0 {
+			chunk = (chunk / int64(directAlign)) * int64(directAlign)
+			if chunk == 0 {
+				break
+			}
+		}
 		n, err := f.Write(buf[:chunk])
 		written += int64(n)
 		if err != nil {
-			return written, err
+			return err
 		}
 	}
-	return written, f.Sync()
-}
-
-func readFileFull(path string, buf []byte) (int64, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-	var total int64
-	for {
-		n, err := f.Read(buf)
-		total += int64(n)
-		if err == io.EOF {
-			return total, nil
-		}
-		if err != nil {
-			return total, err
-		}
-	}
+	return nil
 }
 
 // Cleanup removes all files under this client's host root for the test.
