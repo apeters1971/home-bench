@@ -32,6 +32,17 @@ const SERIES_LABELS = {
   read_bps: "Read",
 };
 
+// Trailing window (seconds/samples) used to damp multi-client plot noise.
+const CHART_SMOOTH_WINDOW = 5;
+const SMOOTH_KEYS = [
+  "read_iops",
+  "write_iops",
+  "delete_iops",
+  "create_iops",
+  "read_bps",
+  "write_bps",
+];
+
 function $(id) {
   return document.getElementById(id);
 }
@@ -146,14 +157,31 @@ function escapeHtml(s) {
     .replaceAll(">", "&gt;");
 }
 
+function smoothHistory(history, windowSize = CHART_SMOOTH_WINDOW) {
+  if (!history?.length || windowSize <= 1) return history || [];
+  return history.map((pt, i) => {
+    const from = Math.max(0, i - windowSize + 1);
+    const slice = history.slice(from, i + 1);
+    const n = slice.length;
+    const out = { ...pt };
+    for (const key of SMOOTH_KEYS) {
+      let sum = 0;
+      for (const s of slice) sum += Number(s[key]) || 0;
+      out[key] = sum / n;
+    }
+    return out;
+  });
+}
+
 function drawCharts(history) {
   const spans = state.snapshot?.phase_spans || [];
-  drawLineChart($("chart-iops"), history, [
+  const smoothed = smoothHistory(history);
+  drawLineChart($("chart-iops"), smoothed, [
     { key: "write_iops", color: "#0f7a5f" },
     { key: "read_iops", color: "#1f5fbf" },
     { key: "delete_iops", color: "#b45309" },
   ], false, spans);
-  drawLineChart($("chart-bw"), history, [
+  drawLineChart($("chart-bw"), smoothed, [
     { key: "write_bps", color: "#0f7a5f" },
     { key: "read_bps", color: "#1f5fbf" },
   ], true, spans);
