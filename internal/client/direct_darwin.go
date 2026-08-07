@@ -19,7 +19,7 @@ func setNoCache(f *os.File) error {
 }
 
 func openDirectWrite(path string) (*os.File, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL|os.O_SYNC, 0o644)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +43,7 @@ func openDirectRead(path string) (*os.File, error) {
 }
 
 func openDirectReadWrite(path string) (*os.File, error) {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_SYNC, 0o644)
 	if err != nil {
 		return nil, err
 	}

@@ -7,12 +7,13 @@ const PHASE_LABELS = {
   final_delete: "Final Delete",
 };
 
+// Phase band colors are distinct from the series colors (write=green, read=blue, delete=amber).
 const PHASE_BANDS = {
-  create:       { fill: "rgba(15, 122, 95, 0.13)",  stroke: "#0f7a5f", label: "Create" },
-  delete:       { fill: "rgba(180, 83, 9, 0.13)",   stroke: "#b45309", label: "Delete" },
-  write_bw:     { fill: "rgba(31, 95, 191, 0.13)",  stroke: "#1f5fbf", label: "Write BW" },
-  read_bw:      { fill: "rgba(14, 116, 144, 0.13)", stroke: "#0e7490", label: "Read BW" },
-  read_write:   { fill: "rgba(161, 98, 7, 0.15)",   stroke: "#a16207", label: "R+W" },
+  create:       { fill: "rgba(15, 122, 95, 0.12)",  stroke: "#0f7a5f", label: "Create" },
+  delete:       { fill: "rgba(180, 83, 9, 0.12)",   stroke: "#b45309", label: "Delete" },
+  write_bw:     { fill: "rgba(71, 85, 105, 0.14)",  stroke: "#334155", label: "Write BW" },
+  read_bw:      { fill: "rgba(15, 118, 110, 0.12)", stroke: "#0f766e", label: "Read BW" },
+  read_write:   { fill: "rgba(202, 138, 4, 0.14)",  stroke: "#a16207", label: "R+W" },
   final_delete: { fill: "rgba(185, 28, 28, 0.12)",  stroke: "#b91c1c", label: "Final Del" },
 };
 
@@ -59,7 +60,15 @@ function formatRate(n) {
   if (n >= 1e9) return (n / 1e9).toFixed(2) + " GB/s";
   if (n >= 1e6) return (n / 1e6).toFixed(1) + " MB/s";
   if (n >= 1e3) return (n / 1e3).toFixed(1) + " KB/s";
-  return n.toFixed(0) + " B/s";
+  return Math.round(n) + " B/s";
+}
+
+// Compact Y-axis labels — short enough not to clip, decimal kept obvious.
+function formatRateAxis(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + "G";
+  if (n >= 1e6) return (n / 1e6).toFixed(0) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(0) + "k";
+  return Math.round(n) + "B";
 }
 
 function buildPhaseRow() {
@@ -359,7 +368,7 @@ function drawLineChart(canvas, history, series, isBytes, spans) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
 
-  const pad = { l: 54, r: 12, t: 26, b: 24 };
+  const pad = { l: isBytes ? 48 : 54, r: 12, t: 26, b: 24 };
   const plotW = width - pad.l - pad.r;
   const plotH = height - pad.t - pad.b;
 
@@ -413,13 +422,14 @@ function drawLineChart(canvas, history, series, isBytes, spans) {
   }
 
   ctx.fillStyle = "#5c6b64";
-  ctx.font = "11px IBM Plex Mono, monospace";
+  ctx.font = "12px IBM Plex Mono, monospace";
   ctx.textAlign = "right";
   for (let i = 0; i <= 4; i++) {
     const v = maxY * (1 - i / 4);
     const y = pad.t + (plotH * i) / 4 + 3;
-    const label = isBytes ? formatRate(v) : Math.round(v).toString();
-    ctx.fillText(label, pad.l - 8, y);
+    // Full "7.50 GB/s" was clipping so "7." vanished and looked like "75 GB/s".
+    const label = isBytes ? formatRateAxis(v) : Math.round(v).toString();
+    ctx.fillText(label, pad.l - 6, y);
   }
 
   const xAt = (t) => pad.l + ((t - tMin) / (tMax - tMin)) * plotW;

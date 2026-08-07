@@ -255,24 +255,35 @@ main {
 
 .legend {
   display: flex;
-  gap: 16px;
+  flex-wrap: wrap;
+  gap: 14px 18px;
   align-items: center;
   margin-top: 8px;
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: 0.82rem;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .swatch {
-  width: 10px;
-  height: 10px;
-  border-radius: 3px;
+  width: 14px;
+  height: 4px;
+  border-radius: 999px;
   display: inline-block;
-  margin-right: 6px;
+  flex: 0 0 auto;
 }
 
 .swatch.write { background: var(--write); }
 .swatch.read { background: var(--read); }
 .swatch.delete { background: var(--delete); }
+
+.legend-label.write { color: var(--write); font-weight: 600; }
+.legend-label.read { color: var(--read); font-weight: 600; }
+.legend-label.delete { color: var(--delete); font-weight: 600; }
 
 .split {
   display: grid;

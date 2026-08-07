@@ -38,20 +38,32 @@ func (s *Stats) SnapshotAndReset() protocol.MetricSample {
 
 // FileLedger tracks files this client created so delete/bw/read can target them.
 type FileLedger struct {
-	mu     sync.Mutex
-	indices []int64
-	next   int64
-	delPos int // persistent cursor across delete ramp steps
+	mu        sync.Mutex
+	indices   []int64
+	bwIndices []int64 // files created during bandwidth-write (unique paths for read-back)
+	next      int64
+	delPos    int // persistent cursor across delete ramp steps
 }
 
 func NewFileLedger() *FileLedger {
-	return &FileLedger{indices: make([]int64, 0, 4096)}
+	return &FileLedger{indices: make([]int64, 0, 4096), bwIndices: make([]int64, 0, 4096)}
 }
 
 func (l *FileLedger) Add(idx int64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.indices = append(l.indices, idx)
+	if idx >= l.next {
+		l.next = idx + 1
+	}
+}
+
+// AddBW records a newly created bandwidth file for later unique read-back.
+func (l *FileLedger) AddBW(idx int64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.indices = append(l.indices, idx)
+	l.bwIndices = append(l.bwIndices, idx)
 	if idx >= l.next {
 		l.next = idx + 1
 	}
@@ -79,6 +91,20 @@ func (l *FileLedger) Snapshot() []int64 {
 	return out
 }
 
+func (l *FileLedger) BWSnapshot() []int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]int64, len(l.bwIndices))
+	copy(out, l.bwIndices)
+	return out
+}
+
+func (l *FileLedger) ClearBW() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.bwIndices = l.bwIndices[:0]
+}
+
 func (l *FileLedger) ResetDeleteCursor() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -89,6 +115,7 @@ func (l *FileLedger) Clear() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.indices = l.indices[:0]
+	l.bwIndices = l.bwIndices[:0]
 	l.next = 0
 	l.delPos = 0
 }
@@ -155,6 +182,7 @@ func (w *Worker) Run(ctx context.Context, cmd protocol.PhaseCommand) error {
 	switch cmd.Phase {
 	case protocol.PhaseCreate:
 		w.Ledger.ResetDeleteCursor()
+		w.Ledger.ClearBW()
 		return w.runCreate(ctx, cmd)
 	case protocol.PhaseDelete, protocol.PhaseFinalDelete:
 		return w.runDelete(ctx, cmd)
@@ -304,19 +332,6 @@ func (w *Worker) runReadWrite(ctx context.Context, cmd protocol.PhaseCommand) er
 }
 
 func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, doWrite, doRead bool) error {
-	indices := w.Ledger.Snapshot()
-	if len(indices) == 0 {
-		for i := int64(0); i < 64; i++ {
-			idx := w.Ledger.NextIndex()
-			w.Ledger.Add(idx)
-		}
-		indices = w.Ledger.Snapshot()
-	}
-	const maxBWFiles = 256
-	if len(indices) > maxBWFiles {
-		indices = indices[:maxBWFiles]
-	}
-
 	fileSize := cmd.FileSize
 	if fileSize <= 0 {
 		fileSize = protocol.BandwidthFileSize
@@ -341,13 +356,28 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 	}
 
 	var (
-		cursor      int
+		readFiles   []int64
+		readCursor  int
 		transferred float64
 		start       = time.Now()
 		file        *os.File
 		fileOff     int64
 		writing     bool
+		activeIdx   int64 = -1
+		lastRefresh time.Time
 	)
+
+	refreshReads := func() {
+		readFiles = w.Ledger.BWSnapshot()
+		lastRefresh = time.Now()
+		if len(readFiles) == 0 {
+			return
+		}
+		if readCursor >= len(readFiles) {
+			readCursor = 0
+		}
+	}
+
 	closeFile := func() {
 		if file != nil {
 			_ = file.Close()
@@ -355,49 +385,64 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 		}
 		fileOff = 0
 		writing = false
+		activeIdx = -1
 	}
 	defer closeFile()
 
-	openNext := func() error {
+	openNextWrite := func() error {
 		closeFile()
-		idx := indices[cursor%len(indices)]
-		cursor++
+		idx := w.Ledger.NextIndex()
 		path := FilePath(cmd.Prefix, cmd.TestName, w.Hostname, idx)
-		if doWrite {
-			if err := EnsureParent(path); err != nil {
+		if err := EnsureParent(path); err != nil {
+			return err
+		}
+		f, err := openDirectWrite(path)
+		if err != nil {
+			f, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL|os.O_SYNC, 0o644)
+			if err != nil {
 				return err
 			}
-			f, err := openDirectWrite(path)
-			if err != nil {
-				// Fallback if the FS rejects O_DIRECT.
-				f, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-				if err != nil {
-					return err
-				}
-			}
-			file = f
-			writing = true
-			return nil
 		}
-		f, err := openDirectRead(path)
-		if err != nil {
-			// File may not exist yet — seed with Direct I/O, then reopen for read.
+		file = f
+		writing = true
+		activeIdx = idx
+		return nil
+	}
+
+	openNextRead := func() error {
+		closeFile()
+		if len(readFiles) == 0 || time.Since(lastRefresh) > time.Second {
+			refreshReads()
+		}
+		if len(readFiles) == 0 {
+			// No bandwidth files yet — seed one unique file, then read it.
+			idx := w.Ledger.NextIndex()
+			path := FilePath(cmd.Prefix, cmd.TestName, w.Hostname, idx)
 			if err := EnsureParent(path); err != nil {
 				return err
 			}
 			if err := writeFileDirect(path, buf, fileSize); err != nil {
 				return err
 			}
-			f, err = openDirectRead(path)
+			w.Ledger.AddBW(idx)
+			refreshReads()
+		}
+		if len(readFiles) == 0 {
+			return fmt.Errorf("no bandwidth files to read")
+		}
+		idx := readFiles[readCursor%len(readFiles)]
+		readCursor++
+		path := FilePath(cmd.Prefix, cmd.TestName, w.Hostname, idx)
+		f, err := openDirectRead(path)
+		if err != nil {
+			f, err = os.Open(path)
 			if err != nil {
-				f, err = os.Open(path)
-				if err != nil {
-					return err
-				}
+				return err
 			}
 		}
 		file = f
 		writing = false
+		activeIdx = idx
 		return nil
 	}
 
@@ -423,7 +468,13 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 		}
 
 		if file == nil {
-			if err := openNext(); err != nil {
+			var err error
+			if doWrite {
+				err = openNextWrite()
+			} else {
+				err = openNextRead()
+			}
+			if err != nil {
 				if err := sleepCtx(ctx, 5*time.Millisecond); err != nil {
 					return err
 				}
@@ -436,13 +487,15 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 			remain := fileSize - fileOff
 			if remain <= 0 {
 				w.Stats.WriteOps.Add(1)
+				if activeIdx >= 0 {
+					w.Ledger.AddBW(activeIdx)
+				}
 				closeFile()
 				continue
 			}
 			if chunk > remain {
 				chunk = remain
 			}
-			// Keep Direct I/O transfers aligned.
 			if chunk%int64(directAlign) != 0 {
 				chunk = (chunk / int64(directAlign)) * int64(directAlign)
 				if chunk == 0 {
@@ -462,12 +515,15 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 			}
 			if fileOff >= fileSize {
 				w.Stats.WriteOps.Add(1)
+				if activeIdx >= 0 {
+					w.Ledger.AddBW(activeIdx)
+				}
 				closeFile()
 			}
 			continue
 		}
 
-		// Read path — Direct I/O streamed in aligned chunks.
+		// Read unique bandwidth files (not rewriting the same cached path).
 		remain := fileSize - fileOff
 		if remain <= 0 {
 			if fileOff > 0 {
@@ -512,7 +568,7 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 func writeFileDirect(path string, buf []byte, size int64) error {
 	f, err := openDirectWrite(path)
 	if err != nil {
-		f, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		f, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_SYNC, 0o644)
 		if err != nil {
 			return err
 		}
