@@ -302,8 +302,11 @@ func (s *Server) handleClientWS(w http.ResponseWriter, r *http.Request) {
 				env.Metrics.Timestamp = time.Now().UTC()
 			}
 			s.registry.Touch(env.Metrics.ClientID)
-			s.metrics.Add(*env.Metrics)
-			s.requestUI()
+			// Heartbeats keep the session alive; only record into plots while running.
+			if s.orch.IsRunning() {
+				s.metrics.Add(*env.Metrics)
+				s.requestUI()
+			}
 
 		case "heartbeat":
 			if clientID != "" {

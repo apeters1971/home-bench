@@ -135,7 +135,7 @@ func (o *Orchestrator) Start() error {
 	o.statusText = "Starting create phase"
 	o.mu.Unlock()
 
-	o.metrics.Reset()
+	o.metrics.Begin()
 	go o.run(ctx, cfg, n)
 	return nil
 }
@@ -152,6 +152,7 @@ func (o *Orchestrator) Stop() {
 		Type: "stop",
 		Stop: &protocol.StopMsg{Cleanup: cleanup},
 	})
+	o.metrics.Freeze()
 	o.mu.Lock()
 	o.running = false
 	o.phase = protocol.PhaseStopped
@@ -159,6 +160,12 @@ func (o *Orchestrator) Stop() {
 	o.statusText = "Stopped — clients cleaning up"
 	o.cancel = nil
 	o.mu.Unlock()
+}
+
+func (o *Orchestrator) IsRunning() bool {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.running
 }
 
 func (o *Orchestrator) setPhase(phase protocol.Phase, percent int, text string) {
@@ -170,6 +177,7 @@ func (o *Orchestrator) setPhase(phase protocol.Phase, percent int, text string) 
 }
 
 func (o *Orchestrator) finish(text string) {
+	o.metrics.Freeze()
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.running = false
