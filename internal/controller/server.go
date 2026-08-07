@@ -26,10 +26,11 @@ type Server struct {
 
 	mu      sync.RWMutex
 	clients map[string]*wsClient // clientID -> conn
-	uiSubs  map[*websocket.Conn]struct{}
+	uiSubs  map[*uiConn]struct{}
 
 	uiMu       sync.Mutex
 	uiPending  bool
+	uiFlushing bool
 	lastUIPush time.Time
 }
 
@@ -37,6 +38,30 @@ type wsClient struct {
 	id   string
 	conn *websocket.Conn
 	mu   sync.Mutex
+}
+
+// uiConn serializes all writes to a browser WebSocket (snapshots + pings).
+type uiConn struct {
+	conn *websocket.Conn
+	mu   sync.Mutex
+}
+
+func (u *uiConn) writeJSON(v any) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	_ = u.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	return u.conn.WriteJSON(v)
+}
+
+func (u *uiConn) ping() error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	_ = u.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	return u.conn.WriteMessage(websocket.PingMessage, []byte("ping"))
+}
+
+func (u *uiConn) close() {
+	_ = u.conn.Close()
 }
 
 func NewServer(webFS fs.FS) *Server {
@@ -47,7 +72,7 @@ func NewServer(webFS fs.FS) *Server {
 		metrics:  metrics,
 		webFS:    webFS,
 		clients:  make(map[string]*wsClient),
-		uiSubs:   make(map[*websocket.Conn]struct{}),
+		uiSubs:   make(map[*uiConn]struct{}),
 	}
 	s.orch = NewOrchestrator(reg, metrics, s)
 	return s
@@ -114,7 +139,7 @@ func (s *Server) StartBackground() {
 				s.mu.Unlock()
 				log.Printf("pruned stale client %s", id)
 			}
-			s.flushUI()
+			s.requestUI()
 		}
 	}()
 }
@@ -152,7 +177,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	s.flushUI()
+	s.requestUI()
 	writeJSON(w, map[string]any{"ok": true})
 }
 
@@ -162,7 +187,7 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.orch.Stop()
-	s.flushUI()
+	s.requestUI()
 	writeJSON(w, map[string]any{"ok": true})
 }
 
@@ -305,14 +330,15 @@ func (s *Server) handleUIWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	ui := &uiConn{conn: conn}
 	s.mu.Lock()
-	s.uiSubs[conn] = struct{}{}
+	s.uiSubs[ui] = struct{}{}
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
-		delete(s.uiSubs, conn)
+		delete(s.uiSubs, ui)
 		s.mu.Unlock()
-		_ = conn.Close()
+		ui.close()
 	}()
 
 	_ = conn.SetReadDeadline(time.Now().Add(protocol.WSReadTimeout))
@@ -331,16 +357,15 @@ func (s *Server) handleUIWS(w http.ResponseWriter, r *http.Request) {
 			case <-done:
 				return
 			case <-t.C:
-				_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-				if err := conn.WriteMessage(websocket.PingMessage, []byte("ping")); err != nil {
-					_ = conn.Close()
+				if err := ui.ping(); err != nil {
+					ui.close()
 					return
 				}
 			}
 		}
 	}()
 
-	_ = conn.WriteJSON(s.orch.Snapshot())
+	_ = ui.writeJSON(s.orch.Snapshot())
 	for {
 		if _, _, err := conn.ReadMessage(); err != nil {
 			return
@@ -353,29 +378,53 @@ func (s *Server) handleUIWS(w http.ResponseWriter, r *http.Request) {
 func (s *Server) requestUI() {
 	s.uiMu.Lock()
 	defer s.uiMu.Unlock()
-	if time.Since(s.lastUIPush) >= 500*time.Millisecond {
-		s.lastUIPush = time.Now()
-		s.uiPending = false
-		go s.flushUI()
+	s.uiPending = true
+	if s.uiFlushing {
 		return
 	}
-	s.uiPending = true
+	if time.Since(s.lastUIPush) < 500*time.Millisecond {
+		return
+	}
+	s.uiFlushing = true
+	go s.flushUI()
 }
 
 func (s *Server) flushUI() {
-	s.uiMu.Lock()
-	s.uiPending = false
-	s.lastUIPush = time.Now()
-	s.uiMu.Unlock()
-
-	snap := s.orch.Snapshot()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for conn := range s.uiSubs {
-		_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-		if err := conn.WriteJSON(snap); err != nil {
-			_ = conn.Close()
+	for {
+		s.uiMu.Lock()
+		if !s.uiPending {
+			s.uiFlushing = false
+			s.uiMu.Unlock()
+			return
 		}
+		s.uiPending = false
+		s.lastUIPush = time.Now()
+		s.uiMu.Unlock()
+
+		snap := s.orch.Snapshot()
+		s.mu.RLock()
+		subs := make([]*uiConn, 0, len(s.uiSubs))
+		for ui := range s.uiSubs {
+			subs = append(subs, ui)
+		}
+		s.mu.RUnlock()
+
+		for _, ui := range subs {
+			if err := ui.writeJSON(snap); err != nil {
+				ui.close()
+			}
+		}
+
+		s.uiMu.Lock()
+		if s.uiPending {
+			// Another update arrived while we were writing; loop again after a short pause.
+			s.uiMu.Unlock()
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		s.uiFlushing = false
+		s.uiMu.Unlock()
+		return
 	}
 }
 
