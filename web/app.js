@@ -58,6 +58,11 @@ function applyConfigForm(cfg) {
 }
 
 function render(snap) {
+  const scrollX = window.scrollX;
+  const scrollY = window.scrollY;
+  const active = document.activeElement;
+  const activeName = active && active.name ? active.name : null;
+
   state.snapshot = snap;
   if (snap.phase_order?.length) state.phaseOrder = snap.phase_order;
 
@@ -73,9 +78,28 @@ function render(snap) {
     btn.classList.toggle("active", snap.running && btn.dataset.phase === snap.phase);
   });
 
+  renderClients(snap.clients || []);
+  drawCharts(snap.history || []);
+
+  // Live WS redraws must not steal focus or jump the viewport (e.g. toward charts).
+  window.scrollTo(scrollX, scrollY);
+  if (activeName) {
+    const field = document.querySelector(`[name="${activeName}"]`);
+    if (field && document.activeElement !== field) field.focus({ preventScroll: true });
+  } else if (active && active !== document.body && document.contains(active)) {
+    active.focus({ preventScroll: true });
+  }
+}
+
+function renderClients(clients) {
   const body = $("client-body");
+  const next = clients.map((c) =>
+    [c.hostname, c.prefix, c.status, PHASE_LABELS[c.phase] || c.phase || ""].join("\0")
+  ).join("\n");
+  if (body.dataset.sig === next) return;
+  body.dataset.sig = next;
   body.innerHTML = "";
-  for (const c of snap.clients || []) {
+  for (const c of clients) {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${escapeHtml(c.hostname)}</td>
@@ -84,8 +108,6 @@ function render(snap) {
       <td>${escapeHtml(PHASE_LABELS[c.phase] || c.phase || "")}</td>`;
     body.appendChild(tr);
   }
-
-  drawCharts(snap.history || []);
 }
 
 function escapeHtml(s) {
@@ -110,10 +132,15 @@ function drawCharts(history) {
 function drawLineChart(canvas, history, series, isBytes) {
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
-  const width = Math.max(320, rect.width);
-  const height = canvas.height;
-  canvas.width = Math.floor(width * dpr);
-  canvas.height = Math.floor(height * dpr);
+  const width = Math.max(320, Math.floor(rect.width));
+  const height = 140;
+  const bufW = Math.floor(width * dpr);
+  const bufH = Math.floor(height * dpr);
+  // Only reset the bitmap when the display size changes — avoids layout jumps.
+  if (canvas.width !== bufW || canvas.height !== bufH) {
+    canvas.width = bufW;
+    canvas.height = bufH;
+  }
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);

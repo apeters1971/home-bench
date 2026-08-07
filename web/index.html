@@ -33,38 +33,6 @@
   </header>
 
   <main>
-    <section class="panel controls">
-      <div class="phase-row" id="phase-row"></div>
-      <div class="actions">
-        <button id="btn-start" class="btn primary">Start</button>
-        <button id="btn-stop" class="btn danger" disabled>Stop</button>
-        <span id="percent" class="percent mono"></span>
-      </div>
-    </section>
-
-    <section class="panel charts">
-      <div class="chart-head">
-        <h2>IOPS</h2>
-        <span class="hint">30 minute history · create/delete count as write ops</span>
-      </div>
-      <canvas id="chart-iops" height="140"></canvas>
-      <div class="legend">
-        <span class="swatch write"></span> Write / Create
-        <span class="swatch read"></span> Read
-        <span class="swatch delete"></span> Delete
-      </div>
-
-      <div class="chart-head spaced">
-        <h2>Bandwidth</h2>
-        <span class="hint">bytes/sec observed by clients</span>
-      </div>
-      <canvas id="chart-bw" height="140"></canvas>
-      <div class="legend">
-        <span class="swatch write"></span> Write
-        <span class="swatch read"></span> Read
-      </div>
-    </section>
-
     <div class="split">
       <section class="panel config">
         <h2>Global parameters</h2>
@@ -117,6 +85,38 @@
         </div>
       </section>
     </div>
+
+    <section class="panel controls">
+      <div class="phase-row" id="phase-row"></div>
+      <div class="actions">
+        <button id="btn-start" class="btn primary">Start</button>
+        <button id="btn-stop" class="btn danger" disabled>Stop</button>
+        <span id="percent" class="percent mono"></span>
+      </div>
+    </section>
+
+    <section class="panel charts">
+      <div class="chart-head">
+        <h2>IOPS</h2>
+        <span class="hint">30 minute history · create/delete count as write ops</span>
+      </div>
+      <canvas id="chart-iops" width="800" height="140"></canvas>
+      <div class="legend">
+        <span class="swatch write"></span> Write / Create
+        <span class="swatch read"></span> Read
+        <span class="swatch delete"></span> Delete
+      </div>
+
+      <div class="chart-head spaced">
+        <h2>Bandwidth</h2>
+        <span class="hint">bytes/sec observed by clients</span>
+      </div>
+      <canvas id="chart-bw" width="800" height="140"></canvas>
+      <div class="legend">
+        <span class="swatch write"></span> Write
+        <span class="swatch read"></span> Read
+      </div>
+    </section>
   </main>
 
   <script src="/app.js"></script>
