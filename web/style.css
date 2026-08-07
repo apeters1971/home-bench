@@ -182,6 +182,10 @@ main {
   font-size: 0.95rem;
 }
 
+.chart-frame {
+  position: relative;
+}
+
 .charts canvas {
   width: 100%;
   height: 170px;
@@ -189,7 +193,43 @@ main {
   border-radius: 10px;
   background: linear-gradient(180deg, rgba(255,255,255,0.7), rgba(244,247,244,0.9));
   border: 1px solid var(--line);
+  cursor: crosshair;
 }
+
+.chart-tooltip {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  min-width: 140px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 10px 24px rgba(20, 32, 28, 0.12);
+  font-size: 0.78rem;
+  color: var(--ink);
+  display: none;
+}
+
+.chart-tooltip.visible { display: block; }
+
+.chart-tooltip .tt-time {
+  font-family: var(--mono);
+  color: var(--muted);
+  margin-bottom: 6px;
+  font-size: 0.72rem;
+}
+
+.chart-tooltip .tt-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 3px 0;
+  font-family: var(--mono);
+}
+
+.chart-tooltip .tt-name { color: var(--muted); }
+.chart-tooltip .tt-val { font-weight: 600; }
 
 .chart-head {
   display: flex;

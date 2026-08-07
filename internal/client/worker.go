@@ -322,8 +322,8 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 	}
 
 	var cursor int
-	var bytesThisSec int64
-	secStart := time.Now()
+	var transferred float64
+	start := time.Now()
 
 	for {
 		if time.Now().After(deadline) {
@@ -335,13 +335,16 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 		default:
 		}
 
-		// Token-bucket style throttle per second.
-		if time.Since(secStart) >= time.Second {
-			secStart = time.Now()
-			bytesThisSec = 0
+		// Pace against elapsed time so slow 64 MiB ops cannot reset a
+		// per-second window and run uncapped (common with many clients).
+		elapsed := time.Since(start).Seconds()
+		if elapsed < 0.001 {
+			elapsed = 0.001
 		}
-		if float64(bytesThisSec) >= bytesPerSec {
-			sleepCtx(ctx, 5*time.Millisecond)
+		if transferred >= bytesPerSec*elapsed {
+			if err := sleepCtx(ctx, time.Millisecond); err != nil {
+				return err
+			}
 			continue
 		}
 
@@ -357,7 +360,7 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 			if err == nil {
 				w.Stats.WriteOps.Add(1)
 				w.Stats.WriteBytes.Add(n)
-				bytesThisSec += n
+				transferred += float64(n)
 			}
 		}
 		if doRead {
@@ -365,7 +368,7 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 			if err == nil {
 				w.Stats.ReadOps.Add(1)
 				w.Stats.ReadBytes.Add(n)
-				bytesThisSec += n
+				transferred += float64(n)
 			}
 		}
 	}

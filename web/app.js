@@ -21,6 +21,15 @@ const MiB = 1024 * 1024;
 const state = {
   snapshot: null,
   phaseOrder: ["create", "delete", "write_bw", "read_bw", "read_write", "final_delete"],
+  hover: null, // { canvasId, index }
+};
+
+const SERIES_LABELS = {
+  write_iops: "Write/Create",
+  read_iops: "Read",
+  delete_iops: "Delete",
+  write_bps: "Write",
+  read_bps: "Read",
 };
 
 function $(id) {
@@ -193,7 +202,120 @@ function drawPhaseBands(ctx, spans, tMin, tMax, pad, plotW, plotH) {
   ctx.textBaseline = "alphabetic";
 }
 
+function ensureTooltip(canvas) {
+  const frame = canvas.parentElement;
+  if (!frame) return null;
+  let tip = frame.querySelector(".chart-tooltip");
+  if (!tip) {
+    tip = document.createElement("div");
+    tip.className = "chart-tooltip";
+    frame.appendChild(tip);
+  }
+  return tip;
+}
+
+function formatSeriesValue(v, isBytes) {
+  if (isBytes) return formatRate(v);
+  if (v >= 100) return Math.round(v).toString();
+  return v.toFixed(1);
+}
+
+function phaseAtTime(spans, t) {
+  for (const span of spans || []) {
+    const start = new Date(span.start).getTime();
+    const end = span.end ? new Date(span.end).getTime() : Date.now();
+    if (t >= start && t <= end) return PHASE_LABELS[span.phase] || span.phase;
+  }
+  return "";
+}
+
+function nearestSampleIndex(history, tMin, tMax, plotW, padL, localX) {
+  if (!history.length || !(tMax > tMin)) return -1;
+  const t = tMin + ((localX - padL) / plotW) * (tMax - tMin);
+  let best = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < history.length; i++) {
+    const d = Math.abs(sampleTime(history[i]) - t);
+    if (d < bestDist) {
+      bestDist = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
+function bindChartHover(canvas) {
+  if (canvas.dataset.hoverBound) return;
+  canvas.dataset.hoverBound = "1";
+
+  canvas.addEventListener("mousemove", (e) => {
+    const meta = canvas._chart;
+    if (!meta?.history?.length) {
+      hideTooltip(canvas);
+      return;
+    }
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const { pad, plotW, plotH, tMin, tMax, history } = meta;
+    if (x < pad.l || x > pad.l + plotW || y < pad.t || y > pad.t + plotH) {
+      if (state.hover?.canvasId === canvas.id) {
+        state.hover = null;
+        hideTooltip(canvas);
+        drawCharts(state.snapshot?.history || []);
+      }
+      return;
+    }
+    const idx = nearestSampleIndex(history, tMin, tMax, plotW, pad.l, x);
+    const prev = state.hover;
+    state.hover = { canvasId: canvas.id, index: idx, x, y };
+    showTooltip(canvas, idx, x, y);
+    if (!prev || prev.canvasId !== canvas.id || prev.index !== idx) {
+      drawCharts(state.snapshot?.history || []);
+    }
+  });
+
+  canvas.addEventListener("mouseleave", () => {
+    if (state.hover?.canvasId === canvas.id) state.hover = null;
+    hideTooltip(canvas);
+    drawCharts(state.snapshot?.history || []);
+  });
+}
+
+function hideTooltip(canvas) {
+  const tip = canvas.parentElement?.querySelector(".chart-tooltip");
+  if (tip) tip.classList.remove("visible");
+}
+
+function showTooltip(canvas, idx, localX, localY) {
+  const meta = canvas._chart;
+  const tip = ensureTooltip(canvas);
+  if (!meta || !tip || idx < 0) return;
+  const pt = meta.history[idx];
+  const t = sampleTime(pt);
+  const phase = phaseAtTime(meta.spans, t);
+  const timeStr = new Date(t).toLocaleTimeString();
+  const rows = meta.series.map((s) => {
+    const v = Number(pt[s.key]) || 0;
+    return `<div class="tt-row"><span class="tt-name" style="color:${s.color}">${SERIES_LABELS[s.key] || s.key}</span><span class="tt-val">${formatSeriesValue(v, meta.isBytes)}</span></div>`;
+  }).join("");
+  tip.innerHTML = `<div class="tt-time">${timeStr}${phase ? " · " + phase : ""}</div>${rows}`;
+  tip.classList.add("visible");
+
+  const frame = canvas.parentElement.getBoundingClientRect();
+  const tipW = tip.offsetWidth || 160;
+  const tipH = tip.offsetHeight || 80;
+  let left = localX + 14;
+  let top = localY - tipH - 10;
+  if (left + tipW > frame.width - 4) left = localX - tipW - 14;
+  if (top < 4) top = localY + 14;
+  tip.style.left = `${Math.max(4, left)}px`;
+  tip.style.top = `${Math.max(4, top)}px`;
+}
+
 function drawLineChart(canvas, history, series, isBytes, spans) {
+  bindChartHover(canvas);
+
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
   const width = Math.max(320, Math.floor(rect.width));
@@ -214,6 +336,8 @@ function drawLineChart(canvas, history, series, isBytes, spans) {
   const plotH = height - pad.t - pad.b;
 
   if (!history.length) {
+    canvas._chart = null;
+    hideTooltip(canvas);
     ctx.strokeStyle = "rgba(20,32,28,0.08)";
     ctx.lineWidth = 1;
     for (let i = 0; i <= 4; i++) {
@@ -240,6 +364,14 @@ function drawLineChart(canvas, history, series, isBytes, spans) {
   }
   if (!(tMax > tMin)) tMax = tMin + 1;
 
+  let maxY = 1;
+  for (const pt of history) {
+    for (const s of series) maxY = Math.max(maxY, Number(pt[s.key]) || 0);
+  }
+  maxY *= 1.15;
+
+  canvas._chart = { history, series, isBytes, spans, pad, tMin, tMax, maxY, plotW, plotH };
+
   drawPhaseBands(ctx, spans, tMin, tMax, pad, plotW, plotH);
 
   ctx.strokeStyle = "rgba(20,32,28,0.08)";
@@ -252,12 +384,6 @@ function drawLineChart(canvas, history, series, isBytes, spans) {
     ctx.stroke();
   }
 
-  let maxY = 1;
-  for (const pt of history) {
-    for (const s of series) maxY = Math.max(maxY, Number(pt[s.key]) || 0);
-  }
-  maxY *= 1.15;
-
   ctx.fillStyle = "#5c6b64";
   ctx.font = "11px IBM Plex Mono, monospace";
   ctx.textAlign = "right";
@@ -269,6 +395,7 @@ function drawLineChart(canvas, history, series, isBytes, spans) {
   }
 
   const xAt = (t) => pad.l + ((t - tMin) / (tMax - tMin)) * plotW;
+  const yAt = (v) => pad.t + plotH - (v / maxY) * plotH;
 
   for (const s of series) {
     ctx.beginPath();
@@ -276,11 +403,40 @@ function drawLineChart(canvas, history, series, isBytes, spans) {
     ctx.lineWidth = 2;
     history.forEach((pt, i) => {
       const x = xAt(sampleTime(pt));
-      const y = pad.t + plotH - ((Number(pt[s.key]) || 0) / maxY) * plotH;
+      const y = yAt(Number(pt[s.key]) || 0);
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     });
     ctx.stroke();
+  }
+
+  // Hover crosshair + sample markers
+  if (state.hover?.canvasId === canvas.id && state.hover.index >= 0) {
+    const idx = Math.min(state.hover.index, history.length - 1);
+    state.hover.index = idx;
+    const pt = history[idx];
+    const x = xAt(sampleTime(pt));
+    ctx.strokeStyle = "rgba(20,32,28,0.35)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.moveTo(x, pad.t);
+    ctx.lineTo(x, pad.t + plotH);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    for (const s of series) {
+      const y = yAt(Number(pt[s.key]) || 0);
+      ctx.fillStyle = s.color;
+      ctx.beginPath();
+      ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+    if (state.hover.x != null) {
+      showTooltip(canvas, idx, state.hover.x, state.hover.y);
+    }
   }
 }
 

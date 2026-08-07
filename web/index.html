@@ -107,7 +107,9 @@
         <h2>IOPS</h2>
         <span class="hint">30 minute history · create/delete count as write ops</span>
       </div>
-      <canvas id="chart-iops" width="800" height="170"></canvas>
+      <div class="chart-frame">
+        <canvas id="chart-iops" width="800" height="170"></canvas>
+      </div>
       <div class="legend">
         <span class="swatch write"></span> Write / Create
         <span class="swatch read"></span> Read
@@ -118,7 +120,9 @@
         <h2>Bandwidth</h2>
         <span class="hint">bytes/sec observed by clients</span>
       </div>
-      <canvas id="chart-bw" width="800" height="170"></canvas>
+      <div class="chart-frame">
+        <canvas id="chart-bw" width="800" height="170"></canvas>
+      </div>
       <div class="legend">
         <span class="swatch write"></span> Write
         <span class="swatch read"></span> Read
