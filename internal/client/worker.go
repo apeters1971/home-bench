@@ -352,7 +352,9 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 	}
 
 	if doWrite {
-		_, _ = rand.Read(buf[:min(len(buf), 4096)])
+		// Fill the whole buffer — a 4 KiB random head with zero tail is highly
+		// compressible and makes gateway/backend traffic look far below client Write() bytes.
+		_, _ = rand.Read(buf)
 	}
 
 	var (
@@ -415,12 +417,13 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 			refreshReads()
 		}
 		if len(readFiles) == 0 {
-			// No bandwidth files yet — seed one unique file, then read it.
+			// No bandwidth files yet — seed one unique incompressible file, then read it.
 			idx := w.Ledger.NextIndex()
 			path := FilePath(cmd.Prefix, cmd.TestName, w.Hostname, idx)
 			if err := EnsureParent(path); err != nil {
 				return err
 			}
+			_, _ = rand.Read(buf)
 			if err := writeFileDirect(path, buf, fileSize); err != nil {
 				return err
 			}
