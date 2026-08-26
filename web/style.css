@@ -286,10 +286,19 @@ main {
 .swatch.write { background: var(--write); }
 .swatch.read { background: var(--read); }
 .swatch.delete { background: var(--delete); }
+.swatch.expected {
+  background: repeating-linear-gradient(
+    90deg,
+    #94a3b8 0 4px,
+    transparent 4px 7px
+  );
+  border: 1px solid #94a3b8;
+}
 
 .legend-label.write { color: var(--write); font-weight: 600; }
 .legend-label.read { color: var(--read); font-weight: 600; }
 .legend-label.delete { color: var(--delete); font-weight: 600; }
+.legend-label.expected { color: #64748b; font-weight: 600; }
 
 .split {
   display: grid;

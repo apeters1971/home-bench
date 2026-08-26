@@ -116,7 +116,7 @@
     <section class="panel charts">
       <div class="chart-head">
         <h2>IOPS</h2>
-        <span class="hint">30 minute history · 5s moving average · create/delete count as write ops</span>
+        <span class="hint">30 minute history · 5s moving average · grey = expected · end label = % of expected reached</span>
       </div>
       <div class="chart-frame">
         <canvas id="chart-iops" width="800" height="170"></canvas>
@@ -125,11 +125,12 @@
         <span class="legend-item"><span class="swatch write"></span><span class="legend-label write">Write / Create</span></span>
         <span class="legend-item"><span class="swatch read"></span><span class="legend-label read">Read</span></span>
         <span class="legend-item"><span class="swatch delete"></span><span class="legend-label delete">Delete</span></span>
+        <span class="legend-item"><span class="swatch expected"></span><span class="legend-label expected">Expected</span></span>
       </div>
 
       <div class="chart-head spaced">
         <h2>Bandwidth</h2>
-        <span class="hint">bytes/sec observed by clients · 5s moving average</span>
+        <span class="hint">bytes/sec observed by clients · 5s moving average · grey = expected · end label = % of expected reached</span>
       </div>
       <div class="chart-frame">
         <canvas id="chart-bw" width="800" height="170"></canvas>
@@ -137,6 +138,7 @@
       <div class="legend">
         <span class="legend-item"><span class="swatch write"></span><span class="legend-label write">Write</span></span>
         <span class="legend-item"><span class="swatch read"></span><span class="legend-label read">Read</span></span>
+        <span class="legend-item"><span class="swatch expected"></span><span class="legend-label expected">Expected</span></span>
       </div>
     </section>
 

@@ -38,6 +38,7 @@ const SERIES_LABELS = {
   delete_iops: "Delete",
   write_bps: "Write",
   read_bps: "Read",
+  expected: "Expected",
 };
 
 // Trailing window (seconds/samples) used to damp multi-client plot noise.
@@ -50,6 +51,11 @@ const SMOOTH_KEYS = [
   "read_bps",
   "write_bps",
 ];
+
+const RAMP_PERCENTS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+const BW_FILE_SIZE = 64 * MiB;
+const CREATE_FILE_SIZE = 4096;
+const EXPECTED_COLOR = "#94a3b8";
 
 function $(id) {
   return document.getElementById(id);
@@ -467,23 +473,143 @@ function drawHistogram(canvas, edges, hist, color, title) {
 
 function drawCharts(history) {
   const spans = state.snapshot?.phase_spans || [];
+  const cfg = state.snapshot?.config || {};
   const smoothed = smoothHistory(history);
   drawLineChart($("chart-iops"), smoothed, [
     { key: "write_iops", color: "#0f7a5f" },
     { key: "read_iops", color: "#1f5fbf" },
     { key: "delete_iops", color: "#b45309" },
-  ], false, spans);
+  ], false, spans, cfg);
   drawLineChart($("chart-bw"), smoothed, [
     { key: "write_bps", color: "#0f7a5f" },
     { key: "read_bps", color: "#1f5fbf" },
-  ], true, spans);
+  ], true, spans, cfg);
 }
 
 function sampleTime(pt) {
   return new Date(pt.timestamp).getTime();
 }
 
-function drawPhaseBands(ctx, spans, tMin, tMax, pad, plotW, plotH) {
+function phaseRampSteps(phase) {
+  if (phase === "delete" || phase === "final_delete") {
+    return RAMP_PERCENTS.concat(100); // extra 100% sweep
+  }
+  if (
+    phase === "create" ||
+    phase === "write_bw" ||
+    phase === "read_bw" ||
+    phase === "read_write"
+  ) {
+    return RAMP_PERCENTS.slice();
+  }
+  return [];
+}
+
+function expectedRateForPhase(phase, pct, cfg, isBytes) {
+  const f = (Number(pct) || 0) / 100;
+  if (f <= 0) return 0;
+  const createRate = Number(cfg.file_creation_rate) || 0;
+  const deleteRate = Number(cfg.file_deletion_rate) || 0;
+  const writeBW = Number(cfg.file_write_bandwidth) || 0;
+  const readBW = Number(cfg.file_read_bandwidth) || 0;
+
+  if (isBytes) {
+    switch (phase) {
+      case "create":
+        return createRate * f * CREATE_FILE_SIZE;
+      case "write_bw":
+        return writeBW * f;
+      case "read_bw":
+        return readBW * f;
+      case "read_write":
+        return (writeBW + readBW) * f;
+      default:
+        return 0;
+    }
+  }
+
+  switch (phase) {
+    case "create":
+      return createRate * f;
+    case "delete":
+    case "final_delete":
+      return deleteRate * f;
+    case "write_bw":
+      return (writeBW * f) / BW_FILE_SIZE;
+    case "read_bw":
+      return (readBW * f) / BW_FILE_SIZE;
+    case "read_write":
+      return ((writeBW + readBW) * f) / BW_FILE_SIZE;
+    default:
+      return 0;
+  }
+}
+
+function expectedAtTime(t, spans, cfg, isBytes) {
+  const stepMs = Math.max(1, (Number(cfg.phase_step_seconds) || 30) * 1000);
+  for (const span of spans || []) {
+    const start = new Date(span.start).getTime();
+    const end = span.end ? new Date(span.end).getTime() : Date.now();
+    if (!(t >= start && t <= end)) continue;
+    const steps = phaseRampSteps(span.phase);
+    if (!steps.length) return 0;
+    const idx = Math.min(steps.length - 1, Math.max(0, Math.floor((t - start) / stepMs)));
+    return expectedRateForPhase(span.phase, steps[idx], cfg, isBytes);
+  }
+  return 0;
+}
+
+function actualForPhase(phase, pt, isBytes) {
+  if (isBytes) {
+    switch (phase) {
+      case "create":
+      case "write_bw":
+        return Number(pt.write_bps) || 0;
+      case "read_bw":
+        return Number(pt.read_bps) || 0;
+      case "read_write":
+        return (Number(pt.write_bps) || 0) + (Number(pt.read_bps) || 0);
+      default:
+        return 0;
+    }
+  }
+  switch (phase) {
+    case "create":
+      return Number(pt.write_iops) || 0;
+    case "delete":
+    case "final_delete":
+      return Number(pt.delete_iops) || 0;
+    case "write_bw":
+      return Number(pt.write_iops) || 0;
+    case "read_bw":
+      return Number(pt.read_iops) || 0;
+    case "read_write":
+      return (Number(pt.write_iops) || 0) + (Number(pt.read_iops) || 0);
+    default:
+      return 0;
+  }
+}
+
+function phaseAttainment(span, history, cfg, isBytes) {
+  if (!span?.end || !history?.length) return null;
+  if (!phaseRampSteps(span.phase).length) return null;
+  const start = new Date(span.start).getTime();
+  const end = new Date(span.end).getTime();
+  let act = 0;
+  let exp = 0;
+  for (const pt of history) {
+    const t = sampleTime(pt);
+    if (t < start || t > end) continue;
+    const e = expectedAtTime(t, [span], cfg, isBytes);
+    if (e <= 0) continue;
+    act += actualForPhase(span.phase, pt, isBytes);
+    exp += e;
+  }
+  if (exp <= 0) return null;
+  return (100 * act) / exp;
+}
+
+function drawPhaseBands(ctx, spans, tMin, tMax, pad, plotW, plotH, history, cfg, isBytes) {
   if (!spans?.length || !(tMax > tMin)) return;
   const labelY = 12;
   const barTop = pad.t;
@@ -517,6 +643,19 @@ function drawPhaseBands(ctx, spans, tMin, tMax, pad, plotW, plotH) {
       ctx.textBaseline = "middle";
       const lx = x0 + w / 2;
       ctx.fillText(style.label, lx, labelY);
+    }
+
+    // When the phase has finished, show how much of expected rate was reached.
+    if (span.end && w >= 28) {
+      const att = phaseAttainment(span, history, cfg, isBytes);
+      if (att != null) {
+        ctx.fillStyle = EXPECTED_COLOR;
+        ctx.font = "600 10px IBM Plex Mono, monospace";
+        ctx.textAlign = "right";
+        ctx.textBaseline = "alphabetic";
+        const label = `${Math.round(att)}%`;
+        ctx.fillText(label, Math.min(x1 - 3, pad.l + plotW - 2), pad.t + plotH - 4);
+      }
     }
   }
   ctx.textBaseline = "alphabetic";
@@ -619,7 +758,11 @@ function showTooltip(canvas, idx, localX, localY) {
     const v = Number(pt[s.key]) || 0;
     return `<div class="tt-row"><span class="tt-name" style="color:${s.color}">${SERIES_LABELS[s.key] || s.key}</span><span class="tt-val">${formatSeriesValue(v, meta.isBytes)}</span></div>`;
   }).join("");
-  tip.innerHTML = `<div class="tt-time">${timeStr}${phase ? " · " + phase : ""}</div>${rows}`;
+  const expected = meta.expected?.[idx] ?? 0;
+  const expRow = expected > 0
+    ? `<div class="tt-row"><span class="tt-name" style="color:${EXPECTED_COLOR}">Expected</span><span class="tt-val">${formatSeriesValue(expected, meta.isBytes)}</span></div>`
+    : "";
+  tip.innerHTML = `<div class="tt-time">${timeStr}${phase ? " · " + phase : ""}</div>${rows}${expRow}`;
   tip.classList.add("visible");
 
   const frame = canvas.parentElement.getBoundingClientRect();
@@ -633,8 +776,9 @@ function showTooltip(canvas, idx, localX, localY) {
   tip.style.top = `${Math.max(4, top)}px`;
 }
 
-function drawLineChart(canvas, history, series, isBytes, spans) {
+function drawLineChart(canvas, history, series, isBytes, spans, cfg) {
   bindChartHover(canvas);
+  cfg = cfg || {};
 
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
@@ -684,15 +828,18 @@ function drawLineChart(canvas, history, series, isBytes, spans) {
   }
   if (!(tMax > tMin)) tMax = tMin + 1;
 
+  const expected = history.map((pt) => expectedAtTime(sampleTime(pt), spans, cfg, isBytes));
+
   let maxY = 1;
   for (const pt of history) {
     for (const s of series) maxY = Math.max(maxY, Number(pt[s.key]) || 0);
   }
+  for (const e of expected) maxY = Math.max(maxY, e || 0);
   maxY *= 1.15;
 
-  canvas._chart = { history, series, isBytes, spans, pad, tMin, tMax, maxY, plotW, plotH };
+  canvas._chart = { history, series, isBytes, spans, expected, pad, tMin, tMax, maxY, plotW, plotH };
 
-  drawPhaseBands(ctx, spans, tMin, tMax, pad, plotW, plotH);
+  drawPhaseBands(ctx, spans, tMin, tMax, pad, plotW, plotH, history, cfg, isBytes);
 
   ctx.strokeStyle = "rgba(20,32,28,0.08)";
   ctx.lineWidth = 1;
@@ -717,6 +864,26 @@ function drawLineChart(canvas, history, series, isBytes, spans) {
 
   const xAt = (t) => pad.l + ((t - tMin) / (tMax - tMin)) * plotW;
   const yAt = (v) => pad.t + plotH - (v / maxY) * plotH;
+
+  // Expected target (staircase ramp) as a grey line.
+  ctx.beginPath();
+  ctx.strokeStyle = EXPECTED_COLOR;
+  ctx.lineWidth = 1.75;
+  ctx.setLineDash([5, 4]);
+  let started = false;
+  history.forEach((pt, i) => {
+    const e = expected[i] || 0;
+    const x = xAt(sampleTime(pt));
+    const y = yAt(e);
+    if (!started) {
+      ctx.moveTo(x, y);
+      started = true;
+    } else {
+      ctx.lineTo(x, y);
+    }
+  });
+  ctx.stroke();
+  ctx.setLineDash([]);
 
   for (const s of series) {
     ctx.beginPath();
@@ -753,6 +920,16 @@ function drawLineChart(canvas, history, series, isBytes, spans) {
       ctx.fill();
       ctx.strokeStyle = "#fff";
       ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+    const exp = expected[idx] || 0;
+    if (exp > 0) {
+      ctx.fillStyle = EXPECTED_COLOR;
+      ctx.beginPath();
+      ctx.arc(x, yAt(exp), 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 1.25;
       ctx.stroke();
     }
     if (state.hover.x != null) {
