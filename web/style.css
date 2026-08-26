@@ -158,7 +158,13 @@ main {
 .actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
+}
+
+.actions-spacer {
+  flex: 1 1 12px;
+  min-width: 12px;
 }
 
 .btn {
@@ -429,4 +435,29 @@ td.mono { font-family: var(--mono); font-size: 0.8rem; }
   .top, main { padding-left: 16px; padding-right: 16px; }
   .split, .grid2 { grid-template-columns: 1fr; }
   .hist-grid { grid-template-columns: 1fr; }
+}
+
+@media print {
+  .bg,
+  .actions,
+  .phase-row,
+  #config-form button,
+  #config-msg,
+  .chart-tooltip {
+    display: none !important;
+  }
+
+  body {
+    background: white;
+  }
+
+  .panel {
+    break-inside: avoid;
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+
+  canvas {
+    max-width: 100%;
+  }
 }

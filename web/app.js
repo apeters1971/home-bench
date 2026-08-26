@@ -711,6 +711,224 @@ async function saveConfig(ev) {
   msg.style.color = "var(--accent)";
 }
 
+function reportBasename() {
+  const snap = state.snapshot || {};
+  const name = (snap.config?.test_name || "homebench")
+    .replace(/[^a-zA-Z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "") || "homebench";
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  return `homebench-${name}-${stamp}`;
+}
+
+function downloadBlob(filename, blob) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function buildExportPayload() {
+  const snap = state.snapshot;
+  if (!snap) return null;
+  return {
+    exported_at: new Date().toISOString(),
+    homebench_report: 1,
+    ...snap,
+  };
+}
+
+function downloadJSON() {
+  const payload = buildExportPayload();
+  if (!payload) {
+    alert("No run data to export yet.");
+    return;
+  }
+  const text = JSON.stringify(payload, null, 2);
+  downloadBlob(
+    `${reportBasename()}.json`,
+    new Blob([text], { type: "application/json;charset=utf-8" })
+  );
+}
+
+function canvasPNG(id) {
+  const c = $(id);
+  if (!c) return "";
+  try {
+    return c.toDataURL("image/png");
+  } catch (_) {
+    return "";
+  }
+}
+
+function escapeHTML(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function latencySummaryHTML(snap) {
+  const lat = snap.latencies || {};
+  const specs = [
+    ["Create", lat.create],
+    ["Delete", lat.delete],
+    ["Write", lat.write],
+    ["Read", lat.read],
+  ];
+  return specs.map(([title, hist], i) => {
+    const imgId = ["hist-create", "hist-delete", "hist-write", "hist-read"][i];
+    const src = canvasPNG(imgId);
+    const n = hist?.total || 0;
+    const avg = n ? formatLatencyUs(hist.sum_us / hist.total) : "—";
+    const img = src
+      ? `<img src="${src}" alt="${escapeHTML(title)} latency histogram" />`
+      : "<p class='muted'>No chart</p>";
+    return `<div class="hist">
+      <h3>${escapeHTML(title)}</h3>
+      ${img}
+      <p class="meta">n=${n} · avg ${escapeHTML(avg)}</p>
+    </div>`;
+  }).join("");
+}
+
+function downloadReport() {
+  const snap = state.snapshot;
+  if (!snap) {
+    alert("No run data to export yet.");
+    return;
+  }
+
+  // Clear hover overlays so captured charts are clean.
+  state.hover = null;
+  state.histHover = null;
+  drawCharts(snap.history || []);
+  drawLatencyHistograms(snap);
+
+  const cfg = snap.config || {};
+  const clients = snap.clients || [];
+  const started = snap.started_at ? new Date(snap.started_at).toLocaleString() : "—";
+  const title = `Homebench · ${cfg.test_name || "report"}`;
+  const filenameHint = reportBasename();
+
+  const clientRows = clients.length
+    ? clients.map((c) => `<tr>
+        <td>${escapeHTML(c.hostname)}</td>
+        <td class="mono">${escapeHTML(c.prefix)}</td>
+        <td>${escapeHTML(c.status)}</td>
+        <td>${escapeHTML(PHASE_LABELS[c.phase] || c.phase || "")}</td>
+      </tr>`).join("")
+    : `<tr><td colspan="4">No clients</td></tr>`;
+
+  const prefixes = (cfg.prefixes || []).map((p) => `<li class="mono">${escapeHTML(p)}</li>`).join("") || "<li>—</li>";
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>${escapeHTML(filenameHint)}</title>
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 28px 32px 48px;
+      font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #14201c;
+      background: #fff;
+    }
+    h1 { font-size: 1.6rem; margin: 0 0 4px; }
+    h2 { font-size: 1.05rem; margin: 22px 0 10px; border-bottom: 1px solid #d7e0d9; padding-bottom: 6px; }
+    h3 { font-size: 0.95rem; margin: 0 0 8px; }
+    .sub { color: #5c6b64; margin: 0 0 18px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 24px; }
+    .kv { margin: 0; }
+    .kv span { display: block; color: #5c6b64; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; }
+    .kv strong { font-size: 0.98rem; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.86em; }
+    ul { margin: 6px 0 0; padding-left: 18px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid #e3ebe5; vertical-align: top; }
+    th { color: #5c6b64; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    img { width: 100%; height: auto; border: 1px solid #d7e0d9; border-radius: 8px; background: #f7faf7; }
+    .chart { margin: 8px 0 4px; }
+    .legend { color: #5c6b64; font-size: 0.8rem; margin: 4px 0 14px; }
+    .hists { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .hist .meta { color: #5c6b64; font-family: ui-monospace, Menlo, monospace; font-size: 0.75rem; margin: 6px 0 0; }
+    .muted { color: #5c6b64; }
+    @media print {
+      body { padding: 12px; }
+      h2 { break-after: avoid; }
+      .chart, .hist, table { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <h1>${escapeHTML(title)}</h1>
+  <p class="sub">Exported ${escapeHTML(new Date().toLocaleString())}</p>
+
+  <h2>Run summary</h2>
+  <div class="grid">
+    <p class="kv"><span>Status</span><strong>${escapeHTML(snap.status_text || "—")}</strong></p>
+    <p class="kv"><span>Elapsed</span><strong class="mono">${escapeHTML(formatElapsed(snap.elapsed_sec))}</strong></p>
+    <p class="kv"><span>Started</span><strong>${escapeHTML(started)}</strong></p>
+    <p class="kv"><span>Clients</span><strong class="mono">${escapeHTML(String(snap.client_count ?? clients.length))}</strong></p>
+    <p class="kv"><span>Phase</span><strong>${escapeHTML(PHASE_LABELS[snap.phase] || snap.phase || "—")}${snap.percent ? ` · ${snap.percent}%` : ""}</strong></p>
+    <p class="kv"><span>Running</span><strong>${snap.running ? "yes" : "no"}</strong></p>
+  </div>
+
+  <h2>Configuration</h2>
+  <div class="grid">
+    <p class="kv"><span>Test name</span><strong>${escapeHTML(cfg.test_name || "—")}</strong></p>
+    <p class="kv"><span>Phase step</span><strong class="mono">${escapeHTML(String(cfg.phase_step_seconds ?? "—"))}s</strong></p>
+    <p class="kv"><span>Create rate</span><strong class="mono">${escapeHTML(String(cfg.file_creation_rate ?? "—"))} files/s</strong></p>
+    <p class="kv"><span>Delete rate</span><strong class="mono">${escapeHTML(String(cfg.file_deletion_rate ?? "—"))} files/s</strong></p>
+    <p class="kv"><span>Write bandwidth</span><strong class="mono">${escapeHTML(((cfg.file_write_bandwidth || 0) / MiB).toFixed(1))} MiB/s</strong></p>
+    <p class="kv"><span>Read bandwidth</span><strong class="mono">${escapeHTML(((cfg.file_read_bandwidth || 0) / MiB).toFixed(1))} MiB/s</strong></p>
+  </div>
+  <p class="kv" style="margin-top:12px"><span>Prefixes</span></p>
+  <ul>${prefixes}</ul>
+
+  <h2>Clients</h2>
+  <table>
+    <thead><tr><th>Hostname</th><th>Prefix</th><th>Status</th><th>Phase</th></tr></thead>
+    <tbody>${clientRows}</tbody>
+  </table>
+
+  <h2>IOPS</h2>
+  <div class="chart"><img src="${canvasPNG("chart-iops")}" alt="IOPS chart" /></div>
+  <p class="legend">Write/Create · Read · Delete · 5s moving average</p>
+
+  <h2>Bandwidth</h2>
+  <div class="chart"><img src="${canvasPNG("chart-bw")}" alt="Bandwidth chart" /></div>
+  <p class="legend">Write · Read · 5s moving average</p>
+
+  <h2>Operation latency</h2>
+  <div class="hists">${latencySummaryHTML(snap)}</div>
+</body>
+</html>`;
+
+  const w = window.open("", "_blank");
+  if (!w) {
+    alert("Pop-up blocked. Allow pop-ups for this site to download the report.");
+    return;
+  }
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+  // Give images a tick to decode, then open the print dialog (Save as PDF).
+  w.focus();
+  setTimeout(() => {
+    try {
+      w.print();
+    } catch (_) {}
+  }, 250);
+}
+
 async function startTest() {
   const res = await fetch("/api/start", { method: "POST" });
   if (!res.ok) alert(await res.text());
@@ -737,6 +955,8 @@ async function bootstrap() {
   $("config-form").addEventListener("submit", saveConfig);
   $("btn-start").addEventListener("click", startTest);
   $("btn-stop").addEventListener("click", stopTest);
+  $("btn-download-json").addEventListener("click", downloadJSON);
+  $("btn-download-report").addEventListener("click", downloadReport);
   window.addEventListener("resize", () => {
     if (!state.snapshot) return;
     drawCharts(state.snapshot.history || []);
