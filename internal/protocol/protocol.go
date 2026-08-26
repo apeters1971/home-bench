@@ -38,6 +38,8 @@ const (
 	DefaultPhaseStepDuration = 30 * time.Second
 	// DefaultPackageURL is unpacked into <prefix>/software when software phases run.
 	DefaultPackageURL = "https://root.cern/download/root_v6.40.02.Linux-almalinux9.8-x86_64-gcc11.5.tar.gz"
+	// DefaultStartupCommand is run from <prefix>/software (cold then warm).
+	DefaultStartupCommand = ". root/bin/thisroot.sh; root -b -q"
 	// SoftwareUnpackTimeout bounds download+extract per client.
 	SoftwareUnpackTimeout = 30 * time.Minute
 	// SoftwareStartupPhaseTimeout bounds orchestrator wait for one cold/warm step.
@@ -74,7 +76,7 @@ func DefaultConfig() Config {
 		FileReadBandwidth:  500 * 1024 * 1024,
 		PhaseStepSeconds:   DefaultPhaseStepDuration.Seconds(),
 		PackageURL:         DefaultPackageURL,
-		StartupCommand:     "",
+		StartupCommand:     DefaultStartupCommand,
 	}
 }
 
