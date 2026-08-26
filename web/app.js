@@ -195,6 +195,35 @@ function formatLatencyAvg(hist) {
   return formatLatencyUs(hist.sum_us / hist.total);
 }
 
+// Approximate percentile from fixed upper-bound buckets (returns bucket upper edge).
+function histogramPercentile(hist, edges, pct) {
+  const total = hist?.total || 0;
+  if (!total || !edges?.length) return null;
+  const counts = hist.counts || [];
+  const target = (pct / 100) * total;
+  let cum = 0;
+  for (let i = 0; i < Math.max(counts.length, edges.length + 1); i++) {
+    cum += Number(counts[i]) || 0;
+    if (cum >= target) {
+      if (i < edges.length) return { index: i, us: edges[i], overflow: false };
+      return { index: i, us: edges[edges.length - 1], overflow: true };
+    }
+  }
+  return { index: edges.length, us: edges[edges.length - 1], overflow: true };
+}
+
+function formatLatencyPercentile(hist, edges, pct) {
+  const p = histogramPercentile(hist, edges, pct);
+  if (!p) return "—";
+  return p.overflow ? `> ${formatLatencyUs(p.us)}` : formatLatencyUs(p.us);
+}
+
+function formatLatencyMeta(hist, edges) {
+  const n = hist?.total || 0;
+  if (!n) return "n=0";
+  return `n=${n} · avg ${formatLatencyAvg(hist)} · p95 ${formatLatencyPercentile(hist, edges, 95)} · p99 ${formatLatencyPercentile(hist, edges, 99)}`;
+}
+
 function formatLatencyBucket(edges, i) {
   if (!edges?.length) return `bucket ${i}`;
   if (i <= 0) return `≤ ${formatLatencyUs(edges[0])}`;
@@ -213,8 +242,7 @@ function drawLatencyHistograms(snap) {
   ];
   for (const s of specs) {
     drawHistogram($(s.id), edges, s.hist, s.color, s.title);
-    const n = s.hist?.total || 0;
-    $(s.meta).textContent = n ? `n=${n} · avg ${formatLatencyAvg(s.hist)}` : "n=0";
+    $(s.meta).textContent = formatLatencyMeta(s.hist, edges);
   }
   if (state.histHover) {
     const c = $(state.histHover.canvasId);
@@ -364,6 +392,40 @@ function drawHistogram(canvas, edges, hist, color, title) {
     }
   }
   ctx.globalAlpha = 1;
+
+  // p95 / p99 markers at the bucket that contains each percentile.
+  const markers = [
+    { pct: 95, stroke: "rgba(20,32,28,0.55)", label: "p95" },
+    { pct: 99, stroke: "rgba(185,28,28,0.75)", label: "p99" },
+  ];
+  const markerByIdx = new Map();
+  for (const m of markers) {
+    const p = histogramPercentile(hist, edges, m.pct);
+    if (!p || p.index < 0 || p.index >= nBuckets) continue;
+    const list = markerByIdx.get(p.index) || [];
+    list.push(m);
+    markerByIdx.set(p.index, list);
+  }
+  ctx.font = "9px IBM Plex Mono, monospace";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  for (const [index, list] of markerByIdx) {
+    const x = pad.l + index * (barW + gap) + barW / 2;
+    for (let i = 0; i < list.length; i++) {
+      const m = list[i];
+      ctx.strokeStyle = m.stroke;
+      ctx.lineWidth = 1.25;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(x, pad.t);
+      ctx.lineTo(x, pad.t + plotH);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = m.stroke;
+      ctx.fillText(m.label, x, pad.t + 1 + i * 11);
+    }
+  }
+  ctx.textBaseline = "alphabetic";
 
   ctx.fillStyle = "#5c6b64";
   ctx.font = "10px IBM Plex Mono, monospace";
@@ -773,6 +835,7 @@ function escapeHTML(s) {
 }
 
 function latencySummaryHTML(snap) {
+  const edges = snap.latency_edges_us || [];
   const lat = snap.latencies || {};
   const specs = [
     ["Create", lat.create],
@@ -783,15 +846,14 @@ function latencySummaryHTML(snap) {
   return specs.map(([title, hist], i) => {
     const imgId = ["hist-create", "hist-delete", "hist-write", "hist-read"][i];
     const src = canvasPNG(imgId);
-    const n = hist?.total || 0;
-    const avg = n ? formatLatencyUs(hist.sum_us / hist.total) : "—";
+    const meta = formatLatencyMeta(hist, edges);
     const img = src
       ? `<img src="${src}" alt="${escapeHTML(title)} latency histogram" />`
       : "<p class='muted'>No chart</p>";
     return `<div class="hist">
       <h3>${escapeHTML(title)}</h3>
       ${img}
-      <p class="meta">n=${n} · avg ${escapeHTML(avg)}</p>
+      <p class="meta">${escapeHTML(meta)}</p>
     </div>`;
   }).join("");
 }
