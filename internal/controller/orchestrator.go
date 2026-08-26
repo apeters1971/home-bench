@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -72,6 +73,9 @@ func (o *Orchestrator) SetConfig(cfg protocol.Config) error {
 	if cfg.PhaseStepSeconds < 1 {
 		return fmt.Errorf("phase_step_seconds must be >= 1")
 	}
+	if strings.TrimSpace(cfg.PackageURL) == "" {
+		cfg.PackageURL = protocol.DefaultPackageURL
+	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.running {
@@ -104,7 +108,7 @@ func (o *Orchestrator) Snapshot() protocol.UIState {
 		Latencies:      o.metrics.Latencies(),
 		LatencyEdgesUs: append([]float64(nil), protocol.LatencyBucketEdgesUs...),
 		PhaseSpans:     spans,
-		PhaseOrder:  protocol.PhaseOrder,
+		PhaseOrder:     protocol.EffectivePhaseOrder(o.cfg),
 		StatusText:  o.statusText,
 		ClientCount: o.registry.Count(),
 	}
@@ -233,8 +237,21 @@ func (o *Orchestrator) run(ctx context.Context, cfg protocol.Config, nClients in
 	readBW := o.perClient(cfg.FileReadBandwidth, nClients)
 	step := cfg.PhaseStepDuration()
 
-	log.Printf("orchestrator: start with %d clients step=%s create=%.1f/s delete=%.1f/s write=%.0f B/s read=%.0f B/s",
-		nClients, step, createRate, deleteRate, writeBW, readBW)
+	log.Printf("orchestrator: start with %d clients step=%s create=%.1f/s delete=%.1f/s write=%.0f B/s read=%.0f B/s software=%v",
+		nClients, step, createRate, deleteRate, writeBW, readBW, cfg.SoftwareEnabled())
+
+	// Optional: unpack package into <prefix>/software, then cold + warm startup.
+	if cfg.SoftwareEnabled() {
+		if err := o.runSoftwarePhase(ctx, protocol.PhaseSoftwareUnpack, protocol.SoftwareUnpackTimeout); err != nil {
+			return
+		}
+		if err := o.runSoftwarePhase(ctx, protocol.PhaseSoftwareCold, protocol.SoftwareStartupPhaseTimeout); err != nil {
+			return
+		}
+		if err := o.runSoftwarePhase(ctx, protocol.PhaseSoftwareWarm, protocol.SoftwareStartupPhaseTimeout); err != nil {
+			return
+		}
+	}
 
 	// 1) Create ramp
 	if err := o.runRamp(ctx, protocol.PhaseCreate, createRate, protocol.CreateFileSize, step); err != nil {
@@ -269,6 +286,72 @@ func (o *Orchestrator) run(ctx context.Context, cfg protocol.Config, nClients in
 		return
 	}
 	_ = o.sendAndWait(ctx, protocol.PhaseFinalDelete, 100, deleteRate, 0, 0, step)
+}
+
+func (o *Orchestrator) runSoftwarePhase(ctx context.Context, phase protocol.Phase, timeout time.Duration) error {
+	cfg := o.Config()
+	o.setPhase(phase, 100, protocol.PhaseLabel(phase))
+
+	cmd := &protocol.PhaseCommand{
+		Phase:          phase,
+		Percent:        100,
+		Duration:       timeout.Seconds(),
+		TestName:       cfg.TestName,
+		PackageURL:     cfg.PackageURL,
+		StartupCommand: cfg.StartupCommand,
+	}
+	o.broadcast.Broadcast(protocol.Envelope{Type: "command", Command: cmd})
+	log.Printf("orchestrator: phase=%s timeout=%s package=%s", phase, timeout, cfg.PackageURL)
+
+	return o.waitClientsIdle(ctx, timeout)
+}
+
+// waitClientsIdle waits until every registered client reports idle after starting work,
+// or until timeout. Used for one-shot software phases that finish early.
+func (o *Orchestrator) waitClientsIdle(ctx context.Context, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(400 * time.Millisecond)
+	defer ticker.Stop()
+
+	sawRunning := false
+	grace := time.Now().Add(1500 * time.Millisecond)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if time.Now().After(deadline) {
+				log.Printf("orchestrator: software phase wait timed out after %s", timeout)
+				return nil
+			}
+			clients := o.registry.List()
+			if len(clients) == 0 {
+				continue
+			}
+			allIdle := true
+			anyRunning := false
+			for _, c := range clients {
+				switch c.Status {
+				case "running":
+					anyRunning = true
+					sawRunning = true
+					allIdle = false
+				case "idle":
+					// finished this step
+				default:
+					allIdle = false
+				}
+			}
+			if sawRunning && allIdle && !anyRunning {
+				return nil
+			}
+			// Fast path: everyone already idle and we waited past grace (finished before first poll).
+			if allIdle && !anyRunning && time.Now().After(grace) && (sawRunning || time.Since(grace) > 2*time.Second) {
+				return nil
+			}
+		}
+	}
 }
 
 func (o *Orchestrator) runRamp(ctx context.Context, phase protocol.Phase, baseRate float64, fileSize int64, step time.Duration) error {

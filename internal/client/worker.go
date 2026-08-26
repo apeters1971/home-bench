@@ -55,6 +55,18 @@ func (s *Stats) ObserveRead(d time.Duration) {
 	s.latMu.Unlock()
 }
 
+func (s *Stats) ObserveStartupCold(d time.Duration) {
+	s.latMu.Lock()
+	s.latencies.StartupCold.ObserveUs(float64(d.Microseconds()))
+	s.latMu.Unlock()
+}
+
+func (s *Stats) ObserveStartupWarm(d time.Duration) {
+	s.latMu.Lock()
+	s.latencies.StartupWarm.ObserveUs(float64(d.Microseconds()))
+	s.latMu.Unlock()
+}
+
 func (s *Stats) SnapshotAndReset() protocol.MetricSample {
 	s.latMu.Lock()
 	lat := s.latencies
@@ -216,6 +228,12 @@ func NewWorker(hostname, prefix string, ledger *FileLedger, stats *Stats) *Worke
 
 func (w *Worker) Run(ctx context.Context, cmd protocol.PhaseCommand) error {
 	switch cmd.Phase {
+	case protocol.PhaseSoftwareUnpack:
+		return w.runSoftwareUnpack(ctx, cmd)
+	case protocol.PhaseSoftwareCold:
+		return w.runSoftwareStartup(ctx, cmd, true)
+	case protocol.PhaseSoftwareWarm:
+		return w.runSoftwareStartup(ctx, cmd, false)
 	case protocol.PhaseCreate:
 		w.Ledger.ResetDeleteCursor()
 		w.Ledger.ClearBW()
@@ -663,10 +681,13 @@ func writeFileDirect(path string, buf []byte, size int64) error {
 	return nil
 }
 
-// Cleanup removes all files under this client's host root for the test.
+// Cleanup removes test host files and any unpacked software under the prefix.
 func (w *Worker) Cleanup(prefix, testName string) error {
 	root := HostRoot(prefix, testName, w.Hostname)
 	err := os.RemoveAll(root)
+	if err2 := os.RemoveAll(SoftwareDir(prefix)); err == nil {
+		err = err2
+	}
 	w.Ledger.Clear()
 	return err
 }

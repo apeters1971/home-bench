@@ -1,4 +1,7 @@
 const PHASE_LABELS = {
+  software_unpack: "Software Unpack",
+  software_cold: "Software Cold",
+  software_warm: "Software Warm",
   create: "Create",
   delete: "Delete",
   write_bw: "Write BW",
@@ -9,6 +12,9 @@ const PHASE_LABELS = {
 
 // Phase band colors are distinct from the series colors (write=green, read=blue, delete=amber).
 const PHASE_BANDS = {
+  software_unpack: { fill: "rgba(88, 28, 135, 0.10)", stroke: "#6b21a8", label: "Unpack" },
+  software_cold:   { fill: "rgba(14, 116, 144, 0.12)", stroke: "#0e7490", label: "Cold" },
+  software_warm:   { fill: "rgba(190, 24, 93, 0.10)",  stroke: "#be185d", label: "Warm" },
   create:       { fill: "rgba(15, 122, 95, 0.12)",  stroke: "#0f7a5f", label: "Create" },
   delete:       { fill: "rgba(180, 83, 9, 0.12)",   stroke: "#b45309", label: "Delete" },
   write_bw:     { fill: "rgba(71, 85, 105, 0.14)",  stroke: "#334155", label: "Write BW" },
@@ -95,6 +101,8 @@ function applyConfigForm(cfg) {
   form.file_write_bandwidth_mib.value = ((cfg.file_write_bandwidth || 0) / MiB).toFixed(1);
   form.file_read_bandwidth_mib.value = ((cfg.file_read_bandwidth || 0) / MiB).toFixed(1);
   form.phase_step_seconds.value = cfg.phase_step_seconds ?? 30;
+  form.package_url.value = cfg.package_url || "";
+  form.startup_command.value = cfg.startup_command || "";
 }
 
 function render(snap) {
@@ -104,7 +112,15 @@ function render(snap) {
   const activeName = active && active.name ? active.name : null;
 
   state.snapshot = snap;
-  if (snap.phase_order?.length) state.phaseOrder = snap.phase_order;
+  if (snap.phase_order?.length) {
+    const next = snap.phase_order.join("\0");
+    if (state.phaseOrder.join("\0") !== next) {
+      state.phaseOrder = snap.phase_order;
+      buildPhaseRow();
+    } else {
+      state.phaseOrder = snap.phase_order;
+    }
+  }
 
   $("elapsed").textContent = formatElapsed(snap.elapsed_sec);
   $("client-count").textContent = String(snap.client_count ?? snap.clients?.length ?? 0);
@@ -239,6 +255,8 @@ function drawLatencyHistograms(snap) {
     { id: "hist-delete", meta: "hist-delete-meta", hist: lat.delete, color: "#b45309", title: "Delete" },
     { id: "hist-write", meta: "hist-write-meta", hist: lat.write, color: "#0f7a5f", title: "Write" },
     { id: "hist-read", meta: "hist-read-meta", hist: lat.read, color: "#1f5fbf", title: "Read" },
+    { id: "hist-startup-cold", meta: "hist-startup-cold-meta", hist: lat.startup_cold, color: "#0e7490", title: "Startup Cold" },
+    { id: "hist-startup-warm", meta: "hist-startup-warm-meta", hist: lat.startup_warm, color: "#be185d", title: "Startup Warm" },
   ];
   for (const s of specs) {
     drawHistogram($(s.id), edges, s.hist, s.color, s.title);
@@ -757,6 +775,8 @@ async function saveConfig(ev) {
     file_write_bandwidth: Number(form.file_write_bandwidth_mib.value) * MiB,
     file_read_bandwidth: Number(form.file_read_bandwidth_mib.value) * MiB,
     phase_step_seconds: Number(form.phase_step_seconds.value),
+    package_url: form.package_url.value.trim(),
+    startup_command: form.startup_command.value.trim(),
   };
   const res = await fetch("/api/config", {
     method: "PUT",
@@ -842,9 +862,18 @@ function latencySummaryHTML(snap) {
     ["Delete", lat.delete],
     ["Write", lat.write],
     ["Read", lat.read],
+    ["Software Startup Cold", lat.startup_cold],
+    ["Software Startup Warm", lat.startup_warm],
   ];
   return specs.map(([title, hist], i) => {
-    const imgId = ["hist-create", "hist-delete", "hist-write", "hist-read"][i];
+    const imgId = [
+      "hist-create",
+      "hist-delete",
+      "hist-write",
+      "hist-read",
+      "hist-startup-cold",
+      "hist-startup-warm",
+    ][i];
     const src = canvasPNG(imgId);
     const meta = formatLatencyMeta(hist, edges);
     const img = src
@@ -951,6 +980,8 @@ function downloadReport() {
     <p class="kv"><span>Delete rate</span><strong class="mono">${escapeHTML(String(cfg.file_deletion_rate ?? "—"))} files/s</strong></p>
     <p class="kv"><span>Write bandwidth</span><strong class="mono">${escapeHTML(((cfg.file_write_bandwidth || 0) / MiB).toFixed(1))} MiB/s</strong></p>
     <p class="kv"><span>Read bandwidth</span><strong class="mono">${escapeHTML(((cfg.file_read_bandwidth || 0) / MiB).toFixed(1))} MiB/s</strong></p>
+    <p class="kv"><span>Package URL</span><strong class="mono">${escapeHTML(cfg.package_url || "—")}</strong></p>
+    <p class="kv"><span>Startup command</span><strong class="mono">${escapeHTML(cfg.startup_command || "—")}</strong></p>
   </div>
   <p class="kv" style="margin-top:12px"><span>Prefixes</span></p>
   <ul>${prefixes}</ul>

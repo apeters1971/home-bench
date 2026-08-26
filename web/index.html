@@ -67,6 +67,14 @@
               <input name="phase_step_seconds" type="number" min="1" step="any" required />
             </label>
           </div>
+          <label>
+            Package URL <span class="hint">optional · enables software phases with startup command</span>
+            <input name="package_url" type="url" placeholder="https://…" />
+          </label>
+          <label>
+            Startup command <span class="hint">run from &lt;prefix&gt;/software · measured cold then warm · 60s timeout</span>
+            <input name="startup_command" type="text" placeholder="e.g. root/bin/root.exe -b -q -e '1'" />
+          </label>
           <button type="submit" class="btn secondary">Save configuration</button>
           <p id="config-msg" class="msg"></p>
         </form>
@@ -157,6 +165,16 @@
           <div class="hist-title">Read</div>
           <canvas id="hist-read" width="400" height="160"></canvas>
           <div class="hist-meta" id="hist-read-meta">n=0</div>
+        </div>
+        <div class="hist-card">
+          <div class="hist-title">Software Startup Cold</div>
+          <canvas id="hist-startup-cold" width="400" height="160"></canvas>
+          <div class="hist-meta" id="hist-startup-cold-meta">n=0</div>
+        </div>
+        <div class="hist-card">
+          <div class="hist-title">Software Startup Warm</div>
+          <canvas id="hist-startup-warm" width="400" height="160"></canvas>
+          <div class="hist-meta" id="hist-startup-warm-meta">n=0</div>
         </div>
       </div>
     </section>

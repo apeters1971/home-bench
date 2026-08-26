@@ -24,6 +24,11 @@ func HostRoot(prefix, testName, hostname string) string {
 	return filepath.Join(prefix, testName, hostname)
 }
 
+// SoftwareDir is where package unpack + startup commands run: <prefix>/software
+func SoftwareDir(prefix string) string {
+	return filepath.Join(prefix, "software")
+}
+
 func EnsureParent(path string) error {
 	return os.MkdirAll(filepath.Dir(path), 0o755)
 }

@@ -75,20 +75,24 @@ func (h LatencyHistogram) Clone() LatencyHistogram {
 	return out
 }
 
-// LatencySet holds the four operation latency histograms for a run.
+// LatencySet holds the operation latency histograms for a run.
 type LatencySet struct {
-	Create LatencyHistogram `json:"create"`
-	Delete LatencyHistogram `json:"delete"`
-	Write  LatencyHistogram `json:"write"`
-	Read   LatencyHistogram `json:"read"`
+	Create       LatencyHistogram `json:"create"`
+	Delete       LatencyHistogram `json:"delete"`
+	Write        LatencyHistogram `json:"write"`
+	Read         LatencyHistogram `json:"read"`
+	StartupCold  LatencyHistogram `json:"startup_cold"`
+	StartupWarm  LatencyHistogram `json:"startup_warm"`
 }
 
 func NewLatencySet() LatencySet {
 	return LatencySet{
-		Create: NewLatencyHistogram(),
-		Delete: NewLatencyHistogram(),
-		Write:  NewLatencyHistogram(),
-		Read:   NewLatencyHistogram(),
+		Create:      NewLatencyHistogram(),
+		Delete:      NewLatencyHistogram(),
+		Write:       NewLatencyHistogram(),
+		Read:        NewLatencyHistogram(),
+		StartupCold: NewLatencyHistogram(),
+		StartupWarm: NewLatencyHistogram(),
 	}
 }
 
@@ -97,13 +101,17 @@ func (s *LatencySet) Merge(other LatencySet) {
 	s.Delete.Merge(other.Delete)
 	s.Write.Merge(other.Write)
 	s.Read.Merge(other.Read)
+	s.StartupCold.Merge(other.StartupCold)
+	s.StartupWarm.Merge(other.StartupWarm)
 }
 
 func (s LatencySet) Clone() LatencySet {
 	return LatencySet{
-		Create: s.Create.Clone(),
-		Delete: s.Delete.Clone(),
-		Write:  s.Write.Clone(),
-		Read:   s.Read.Clone(),
+		Create:      s.Create.Clone(),
+		Delete:      s.Delete.Clone(),
+		Write:       s.Write.Clone(),
+		Read:        s.Read.Clone(),
+		StartupCold: s.StartupCold.Clone(),
+		StartupWarm: s.StartupWarm.Clone(),
 	}
 }

@@ -1,19 +1,25 @@
 package protocol
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Phase identifies the current test stage.
 type Phase string
 
 const (
-	PhaseIdle        Phase = "idle"
-	PhaseCreate      Phase = "create"
-	PhaseDelete      Phase = "delete"
-	PhaseWriteBW     Phase = "write_bw"
-	PhaseReadBW      Phase = "read_bw"
-	PhaseReadWrite   Phase = "read_write"
-	PhaseFinalDelete Phase = "final_delete"
-	PhaseStopped     Phase = "stopped"
+	PhaseIdle           Phase = "idle"
+	PhaseSoftwareUnpack Phase = "software_unpack"
+	PhaseSoftwareCold   Phase = "software_cold"
+	PhaseSoftwareWarm   Phase = "software_warm"
+	PhaseCreate         Phase = "create"
+	PhaseDelete         Phase = "delete"
+	PhaseWriteBW        Phase = "write_bw"
+	PhaseReadBW         Phase = "read_bw"
+	PhaseReadWrite      Phase = "read_write"
+	PhaseFinalDelete    Phase = "final_delete"
+	PhaseStopped        Phase = "stopped"
 )
 
 // RampPercents is the fixed intensity ladder used by every phase.
@@ -30,6 +36,12 @@ const (
 	HistoryRetention = 30 * time.Minute
 	// DefaultPhaseStepDuration is the default time spent at each 10% ramp step.
 	DefaultPhaseStepDuration = 30 * time.Second
+	// DefaultPackageURL is unpacked into <prefix>/software when software phases run.
+	DefaultPackageURL = "https://root.cern/download/root_v6.40.02.Linux-almalinux9.8-x86_64-gcc11.5.tar.gz"
+	// SoftwareUnpackTimeout bounds download+extract per client.
+	SoftwareUnpackTimeout = 30 * time.Minute
+	// SoftwareStartupPhaseTimeout bounds orchestrator wait for one cold/warm step.
+	SoftwareStartupPhaseTimeout = 90 * time.Second
 	// WSPingInterval is how often ping frames are sent to keep NAT mappings alive.
 	WSPingInterval = 20 * time.Second
 	// WSReadTimeout is the idle read deadline; refreshed on pong/data.
@@ -47,6 +59,8 @@ type Config struct {
 	FileWriteBandwidth float64  `json:"file_write_bandwidth"` // bytes/sec global
 	FileReadBandwidth  float64  `json:"file_read_bandwidth"`  // bytes/sec global
 	PhaseStepSeconds   float64  `json:"phase_step_seconds"`   // seconds at each 10% ramp step
+	PackageURL         string   `json:"package_url"`          // tarball URL for software phases
+	StartupCommand     string   `json:"startup_command"`      // shell command run from <prefix>/software
 }
 
 // DefaultConfig returns sensible starting values.
@@ -59,7 +73,14 @@ func DefaultConfig() Config {
 		FileWriteBandwidth: 500 * 1024 * 1024, // 500 MiB/s
 		FileReadBandwidth:  500 * 1024 * 1024,
 		PhaseStepSeconds:   DefaultPhaseStepDuration.Seconds(),
+		PackageURL:         DefaultPackageURL,
+		StartupCommand:     "",
 	}
+}
+
+// SoftwareEnabled is true when package URL and startup command are both set.
+func (c Config) SoftwareEnabled() bool {
+	return strings.TrimSpace(c.PackageURL) != "" && strings.TrimSpace(c.StartupCommand) != ""
 }
 
 // PhaseStepDuration returns the configured ramp-step length.
@@ -109,16 +130,18 @@ type AggregatedSample struct {
 
 // PhaseCommand tells clients what to execute.
 type PhaseCommand struct {
-	Phase      Phase   `json:"phase"`
-	Percent    int     `json:"percent"`
-	Duration   float64 `json:"duration_sec"` // 0 = run until complete / until stop
-	Rate       float64 `json:"rate"`         // ops/sec or bytes/sec depending on phase
-	ReadRate   float64 `json:"read_rate"`    // bytes/sec for read side of read_write
-	TestName   string  `json:"test_name"`
-	Prefix     string  `json:"prefix"`
-	FileSize   int64   `json:"file_size"`
-	StartIndex int64   `json:"start_index"` // for create: starting file index
-	CountHint  int64   `json:"count_hint"`  // expected files for delete/bw phases
+	Phase          Phase   `json:"phase"`
+	Percent        int     `json:"percent"`
+	Duration       float64 `json:"duration_sec"` // 0 = run until complete / until stop
+	Rate           float64 `json:"rate"`         // ops/sec or bytes/sec depending on phase
+	ReadRate       float64 `json:"read_rate"`    // bytes/sec for read side of read_write
+	TestName       string  `json:"test_name"`
+	Prefix         string  `json:"prefix"`
+	FileSize       int64   `json:"file_size"`
+	StartIndex     int64   `json:"start_index"` // for create: starting file index
+	CountHint      int64   `json:"count_hint"`  // expected files for delete/bw phases
+	PackageURL     string  `json:"package_url,omitempty"`
+	StartupCommand string  `json:"startup_command,omitempty"`
 }
 
 // Envelope is the WebSocket / HTTP message wrapper.
@@ -184,7 +207,7 @@ type UIState struct {
 	ClientCount     int                `json:"client_count"`
 }
 
-// PhaseOrder is the fixed sequence of a full run.
+// PhaseOrder is the base sequence of a full run (without optional software phases).
 var PhaseOrder = []Phase{
 	PhaseCreate,
 	PhaseDelete,
@@ -194,10 +217,29 @@ var PhaseOrder = []Phase{
 	PhaseFinalDelete,
 }
 
+// EffectivePhaseOrder includes software phases when configured.
+func EffectivePhaseOrder(cfg Config) []Phase {
+	if !cfg.SoftwareEnabled() {
+		out := make([]Phase, len(PhaseOrder))
+		copy(out, PhaseOrder)
+		return out
+	}
+	out := make([]Phase, 0, len(PhaseOrder)+3)
+	out = append(out, PhaseSoftwareUnpack, PhaseSoftwareCold, PhaseSoftwareWarm)
+	out = append(out, PhaseOrder...)
+	return out
+}
+
 func PhaseLabel(p Phase) string {
 	switch p {
 	case PhaseIdle:
 		return "Idle"
+	case PhaseSoftwareUnpack:
+		return "Software Unpack"
+	case PhaseSoftwareCold:
+		return "Software Cold"
+	case PhaseSoftwareWarm:
+		return "Software Warm"
 	case PhaseCreate:
 		return "Create"
 	case PhaseDelete:
