@@ -128,6 +128,35 @@
         <span class="legend-item"><span class="swatch read"></span><span class="legend-label read">Read</span></span>
       </div>
     </section>
+
+    <section class="panel latency">
+      <div class="chart-head">
+        <h2>Operation latency</h2>
+        <span class="hint">syscall / file-op wall time · cumulative for this run · log-ish buckets</span>
+      </div>
+      <div class="hist-grid">
+        <div class="hist-card">
+          <div class="hist-title">Create</div>
+          <canvas id="hist-create" width="400" height="160"></canvas>
+          <div class="hist-meta" id="hist-create-meta">n=0</div>
+        </div>
+        <div class="hist-card">
+          <div class="hist-title">Delete</div>
+          <canvas id="hist-delete" width="400" height="160"></canvas>
+          <div class="hist-meta" id="hist-delete-meta">n=0</div>
+        </div>
+        <div class="hist-card">
+          <div class="hist-title">Write</div>
+          <canvas id="hist-write" width="400" height="160"></canvas>
+          <div class="hist-meta" id="hist-write-meta">n=0</div>
+        </div>
+        <div class="hist-card">
+          <div class="hist-title">Read</div>
+          <canvas id="hist-read" width="400" height="160"></canvas>
+          <div class="hist-meta" id="hist-read-meta">n=0</div>
+        </div>
+      </div>
+    </section>
   </main>
 
   <script src="/app.js"></script>

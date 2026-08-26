@@ -119,6 +119,7 @@ function render(snap) {
 
   renderClients(snap.clients || []);
   drawCharts(snap.history || []);
+  drawLatencyHistograms(snap);
 
   // Live WS redraws must not steal focus or jump the viewport (e.g. toward charts).
   window.scrollTo(scrollX, scrollY);
@@ -180,6 +181,109 @@ function smoothHistory(history, windowSize = CHART_SMOOTH_WINDOW) {
     }
     return out;
   });
+}
+
+function formatLatencyUs(us) {
+  if (us >= 1e6) return (us / 1e6).toFixed(us >= 1e7 ? 0 : 1) + "s";
+  if (us >= 1e3) return (us / 1e3).toFixed(us >= 1e4 ? 0 : 1) + "ms";
+  return Math.round(us) + "µs";
+}
+
+function formatLatencyAvg(hist) {
+  if (!hist?.total) return "—";
+  return formatLatencyUs(hist.sum_us / hist.total);
+}
+
+function drawLatencyHistograms(snap) {
+  const edges = snap.latency_edges_us || [];
+  const lat = snap.latencies || {};
+  const specs = [
+    { id: "hist-create", meta: "hist-create-meta", hist: lat.create, color: "#0f7a5f", title: "Create" },
+    { id: "hist-delete", meta: "hist-delete-meta", hist: lat.delete, color: "#b45309", title: "Delete" },
+    { id: "hist-write", meta: "hist-write-meta", hist: lat.write, color: "#0f7a5f", title: "Write" },
+    { id: "hist-read", meta: "hist-read-meta", hist: lat.read, color: "#1f5fbf", title: "Read" },
+  ];
+  for (const s of specs) {
+    drawHistogram($(s.id), edges, s.hist, s.color);
+    const n = s.hist?.total || 0;
+    $(s.meta).textContent = n ? `n=${n} · avg ${formatLatencyAvg(s.hist)}` : "n=0";
+  }
+}
+
+function drawHistogram(canvas, edges, hist, color) {
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.max(240, Math.floor(rect.width));
+  const height = 160;
+  const bufW = Math.floor(width * dpr);
+  const bufH = Math.floor(height * dpr);
+  if (canvas.width !== bufW || canvas.height !== bufH) {
+    canvas.width = bufW;
+    canvas.height = bufH;
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  const pad = { l: 36, r: 10, t: 10, b: 28 };
+  const plotW = width - pad.l - pad.r;
+  const plotH = height - pad.t - pad.b;
+  const counts = hist?.counts || [];
+  const nBuckets = Math.max(counts.length, edges.length + 1);
+
+  ctx.strokeStyle = "rgba(20,32,28,0.08)";
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 3; i++) {
+    const y = pad.t + (plotH * i) / 3;
+    ctx.beginPath();
+    ctx.moveTo(pad.l, y);
+    ctx.lineTo(pad.l + plotW, y);
+    ctx.stroke();
+  }
+
+  if (!hist?.total) {
+    ctx.fillStyle = "#5c6b64";
+    ctx.font = "12px Sora, sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText("No samples yet", pad.l + 8, pad.t + 18);
+    return;
+  }
+
+  let maxC = 1;
+  for (let i = 0; i < nBuckets; i++) maxC = Math.max(maxC, Number(counts[i]) || 0);
+
+  const gap = 1;
+  const barW = Math.max(1, (plotW - gap * (nBuckets - 1)) / nBuckets);
+  ctx.fillStyle = color;
+  for (let i = 0; i < nBuckets; i++) {
+    const c = Number(counts[i]) || 0;
+    const h = (c / maxC) * plotH;
+    const x = pad.l + i * (barW + gap);
+    const y = pad.t + plotH - h;
+    ctx.globalAlpha = 0.85;
+    ctx.fillRect(x, y, barW, Math.max(h, c > 0 ? 1 : 0));
+  }
+  ctx.globalAlpha = 1;
+
+  ctx.fillStyle = "#5c6b64";
+  ctx.font = "10px IBM Plex Mono, monospace";
+  ctx.textAlign = "right";
+  ctx.fillText(String(maxC), pad.l - 4, pad.t + 8);
+  ctx.fillText("0", pad.l - 4, pad.t + plotH);
+
+  // A few x labels along the edges.
+  ctx.textAlign = "center";
+  const labelIdx = [0, Math.floor((edges.length - 1) / 2), edges.length - 1];
+  const seen = new Set();
+  for (const i of labelIdx) {
+    if (i < 0 || i >= edges.length || seen.has(i)) continue;
+    seen.add(i);
+    const x = pad.l + i * (barW + gap) + barW / 2;
+    ctx.fillText(formatLatencyUs(edges[i]), x, height - 8);
+  }
+  // Overflow bucket marker
+  ctx.fillText(">", pad.l + (nBuckets - 1) * (barW + gap) + barW / 2, height - 8);
 }
 
 function drawCharts(history) {
@@ -535,7 +639,9 @@ async function bootstrap() {
   $("btn-start").addEventListener("click", startTest);
   $("btn-stop").addEventListener("click", stopTest);
   window.addEventListener("resize", () => {
-    if (state.snapshot) drawCharts(state.snapshot.history || []);
+    if (!state.snapshot) return;
+    drawCharts(state.snapshot.history || []);
+    drawLatencyHistograms(state.snapshot);
   });
 
   const res = await fetch("/api/state");

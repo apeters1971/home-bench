@@ -92,6 +92,8 @@ type MetricSample struct {
 	CreateOps  int64     `json:"create_ops"`
 	ReadBytes  int64     `json:"read_bytes"`
 	WriteBytes int64     `json:"write_bytes"`
+	// Latency deltas since the previous metrics push (bucket counts).
+	Latencies LatencySet `json:"latencies"`
 }
 
 // AggregatedSample is the controller-side sum across clients for one second.
@@ -173,11 +175,13 @@ type UIState struct {
 	Percent     int                `json:"percent"`
 	StartedAt   *time.Time         `json:"started_at,omitempty"`
 	ElapsedSec  float64            `json:"elapsed_sec"`
-	History     []AggregatedSample `json:"history"`
-	PhaseSpans  []PhaseSpan        `json:"phase_spans"`
-	PhaseOrder  []Phase            `json:"phase_order"`
-	StatusText  string             `json:"status_text"`
-	ClientCount int                `json:"client_count"`
+	History         []AggregatedSample `json:"history"`
+	Latencies       LatencySet         `json:"latencies"`
+	LatencyEdgesUs  []float64          `json:"latency_edges_us"`
+	PhaseSpans      []PhaseSpan        `json:"phase_spans"`
+	PhaseOrder      []Phase            `json:"phase_order"`
+	StatusText      string             `json:"status_text"`
+	ClientCount     int                `json:"client_count"`
 }
 
 // PhaseOrder is the fixed sequence of a full run.

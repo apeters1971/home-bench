@@ -22,9 +22,44 @@ type Stats struct {
 	DeleteOps  atomic.Int64
 	ReadBytes  atomic.Int64
 	WriteBytes atomic.Int64
+
+	latMu     sync.Mutex
+	latencies protocol.LatencySet
+}
+
+func NewStats() *Stats {
+	return &Stats{latencies: protocol.NewLatencySet()}
+}
+
+func (s *Stats) ObserveCreate(d time.Duration) {
+	s.latMu.Lock()
+	s.latencies.Create.ObserveUs(float64(d.Microseconds()))
+	s.latMu.Unlock()
+}
+
+func (s *Stats) ObserveDelete(d time.Duration) {
+	s.latMu.Lock()
+	s.latencies.Delete.ObserveUs(float64(d.Microseconds()))
+	s.latMu.Unlock()
+}
+
+func (s *Stats) ObserveWrite(d time.Duration) {
+	s.latMu.Lock()
+	s.latencies.Write.ObserveUs(float64(d.Microseconds()))
+	s.latMu.Unlock()
+}
+
+func (s *Stats) ObserveRead(d time.Duration) {
+	s.latMu.Lock()
+	s.latencies.Read.ObserveUs(float64(d.Microseconds()))
+	s.latMu.Unlock()
 }
 
 func (s *Stats) SnapshotAndReset() protocol.MetricSample {
+	s.latMu.Lock()
+	lat := s.latencies
+	s.latencies = protocol.NewLatencySet()
+	s.latMu.Unlock()
 	return protocol.MetricSample{
 		ReadOps:    s.ReadOps.Swap(0),
 		WriteOps:   s.WriteOps.Swap(0),
@@ -32,6 +67,7 @@ func (s *Stats) SnapshotAndReset() protocol.MetricSample {
 		DeleteOps:  s.DeleteOps.Swap(0),
 		ReadBytes:  s.ReadBytes.Swap(0),
 		WriteBytes: s.WriteBytes.Swap(0),
+		Latencies:  lat,
 		Timestamp:  time.Now().UTC(),
 	}
 }
@@ -229,9 +265,13 @@ func (w *Worker) runCreate(ctx context.Context, cmd protocol.PhaseCommand) error
 		if err := EnsureParent(path); err != nil {
 			continue
 		}
-		if err := os.WriteFile(path, payload, 0o644); err != nil {
+		t0 := time.Now()
+		err := os.WriteFile(path, payload, 0o644)
+		opDur := time.Since(t0)
+		if err != nil {
 			continue
 		}
+		w.Stats.ObserveCreate(opDur)
 		w.Ledger.Add(idx)
 		w.Stats.CreateOps.Add(1)
 		w.Stats.WriteBytes.Add(int64(len(payload)))
@@ -277,9 +317,13 @@ func (w *Worker) runDelete(ctx context.Context, cmd protocol.PhaseCommand) error
 				continue
 			}
 		}
-		if err := os.Remove(path); err != nil {
+		t0 := time.Now()
+		err := os.Remove(path)
+		opDur := time.Since(t0)
+		if err != nil {
 			continue
 		}
+		w.Stats.ObserveDelete(opDur)
 		w.Stats.DeleteOps.Add(1)
 		deleted++
 	}
@@ -366,6 +410,7 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 		fileOff     int64
 		writing     bool
 		activeIdx   int64 = -1
+		fileOpStart time.Time
 		lastRefresh time.Time
 	)
 
@@ -388,6 +433,7 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 		fileOff = 0
 		writing = false
 		activeIdx = -1
+		fileOpStart = time.Time{}
 	}
 	defer closeFile()
 
@@ -398,6 +444,7 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 		if err := EnsureParent(path); err != nil {
 			return err
 		}
+		t0 := time.Now()
 		f, err := openDirectWrite(path)
 		if err != nil {
 			f, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL|os.O_SYNC, 0o644)
@@ -408,6 +455,7 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 		file = f
 		writing = true
 		activeIdx = idx
+		fileOpStart = t0
 		return nil
 	}
 
@@ -436,6 +484,7 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 		idx := readFiles[readCursor%len(readFiles)]
 		readCursor++
 		path := FilePath(cmd.Prefix, cmd.TestName, w.Hostname, idx)
+		t0 := time.Now()
 		f, err := openDirectRead(path)
 		if err != nil {
 			f, err = os.Open(path)
@@ -446,6 +495,7 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 		file = f
 		writing = false
 		activeIdx = idx
+		fileOpStart = t0
 		return nil
 	}
 
@@ -489,6 +539,9 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 		if writing {
 			remain := fileSize - fileOff
 			if remain <= 0 {
+				if !fileOpStart.IsZero() {
+					w.Stats.ObserveWrite(time.Since(fileOpStart))
+				}
 				w.Stats.WriteOps.Add(1)
 				if activeIdx >= 0 {
 					w.Ledger.AddBW(activeIdx)
@@ -517,6 +570,9 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 				continue
 			}
 			if fileOff >= fileSize {
+				if !fileOpStart.IsZero() {
+					w.Stats.ObserveWrite(time.Since(fileOpStart))
+				}
 				w.Stats.WriteOps.Add(1)
 				if activeIdx >= 0 {
 					w.Ledger.AddBW(activeIdx)
@@ -530,6 +586,9 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 		remain := fileSize - fileOff
 		if remain <= 0 {
 			if fileOff > 0 {
+				if !fileOpStart.IsZero() {
+					w.Stats.ObserveRead(time.Since(fileOpStart))
+				}
 				w.Stats.ReadOps.Add(1)
 			}
 			closeFile()
@@ -542,6 +601,9 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 			chunk = (chunk / int64(directAlign)) * int64(directAlign)
 			if chunk == 0 {
 				if fileOff > 0 {
+					if !fileOpStart.IsZero() {
+						w.Stats.ObserveRead(time.Since(fileOpStart))
+					}
 					w.Stats.ReadOps.Add(1)
 				}
 				closeFile()
@@ -556,6 +618,9 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 		}
 		if err == io.EOF || fileOff >= fileSize {
 			if fileOff > 0 {
+				if !fileOpStart.IsZero() {
+					w.Stats.ObserveRead(time.Since(fileOpStart))
+				}
 				w.Stats.ReadOps.Add(1)
 			}
 			closeFile()

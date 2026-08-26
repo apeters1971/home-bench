@@ -15,7 +15,8 @@ type MetricsStore struct {
 	recording bool
 	history   []protocol.AggregatedSample
 	// pending buckets keyed by unix second
-	buckets map[int64]*bucket
+	buckets   map[int64]*bucket
+	latencies protocol.LatencySet
 }
 
 type bucket struct {
@@ -31,8 +32,9 @@ type bucket struct {
 
 func NewMetricsStore() *MetricsStore {
 	return &MetricsStore{
-		history: make([]protocol.AggregatedSample, 0, 2048),
-		buckets: make(map[int64]*bucket),
+		history:   make([]protocol.AggregatedSample, 0, 2048),
+		buckets:   make(map[int64]*bucket),
+		latencies: protocol.NewLatencySet(),
 	}
 }
 
@@ -41,6 +43,7 @@ func (m *MetricsStore) Begin() {
 	defer m.mu.Unlock()
 	m.history = m.history[:0]
 	m.buckets = make(map[int64]*bucket)
+	m.latencies = protocol.NewLatencySet()
 	m.recording = true
 }
 
@@ -82,6 +85,7 @@ func (m *MetricsStore) Add(sample protocol.MetricSample) {
 	b.readBytes += sample.ReadBytes
 	b.writeBytes += sample.WriteBytes
 	b.clients[sample.ClientID] = struct{}{}
+	m.latencies.Merge(sample.Latencies)
 
 	m.flushClosed(sec)
 	m.trim()
@@ -142,4 +146,10 @@ func (m *MetricsStore) History() []protocol.AggregatedSample {
 		}
 	}
 	return out
+}
+
+func (m *MetricsStore) Latencies() protocol.LatencySet {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.latencies.Clone()
 }

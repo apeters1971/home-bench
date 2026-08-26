@@ -36,7 +36,7 @@ func NewAgent(controllerURL, hostname string) *Agent {
 		h, _ := os.Hostname()
 		hostname = h
 	}
-	stats := &Stats{}
+	stats := NewStats()
 	ledger := NewFileLedger()
 	return &Agent{
 		ControllerURL: controllerURL,
