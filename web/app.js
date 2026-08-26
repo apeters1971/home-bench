@@ -23,6 +23,7 @@ const state = {
   snapshot: null,
   phaseOrder: ["create", "delete", "write_bw", "read_bw", "read_write", "final_delete"],
   hover: null, // { canvasId, index }
+  histHover: null, // { canvasId, index, x, y }
 };
 
 const SERIES_LABELS = {
@@ -194,6 +195,13 @@ function formatLatencyAvg(hist) {
   return formatLatencyUs(hist.sum_us / hist.total);
 }
 
+function formatLatencyBucket(edges, i) {
+  if (!edges?.length) return `bucket ${i}`;
+  if (i <= 0) return `≤ ${formatLatencyUs(edges[0])}`;
+  if (i >= edges.length) return `> ${formatLatencyUs(edges[edges.length - 1])}`;
+  return `${formatLatencyUs(edges[i - 1])} – ${formatLatencyUs(edges[i])}`;
+}
+
 function drawLatencyHistograms(snap) {
   const edges = snap.latency_edges_us || [];
   const lat = snap.latencies || {};
@@ -204,14 +212,86 @@ function drawLatencyHistograms(snap) {
     { id: "hist-read", meta: "hist-read-meta", hist: lat.read, color: "#1f5fbf", title: "Read" },
   ];
   for (const s of specs) {
-    drawHistogram($(s.id), edges, s.hist, s.color);
+    drawHistogram($(s.id), edges, s.hist, s.color, s.title);
     const n = s.hist?.total || 0;
     $(s.meta).textContent = n ? `n=${n} · avg ${formatLatencyAvg(s.hist)}` : "n=0";
   }
+  if (state.histHover) {
+    const c = $(state.histHover.canvasId);
+    if (c) showHistTooltip(c, state.histHover.index, state.histHover.x, state.histHover.y);
+  }
 }
 
-function drawHistogram(canvas, edges, hist, color) {
+function bindHistHover(canvas) {
+  if (!canvas || canvas.dataset.histHoverBound) return;
+  canvas.dataset.histHoverBound = "1";
+
+  canvas.addEventListener("mousemove", (e) => {
+    const meta = canvas._hist;
+    if (!meta?.nBuckets || !meta.total) {
+      hideTooltip(canvas);
+      return;
+    }
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const { pad, plotW, plotH, nBuckets, gap, barW } = meta;
+    if (x < pad.l || x > pad.l + plotW || y < pad.t || y > pad.t + plotH) {
+      if (state.histHover?.canvasId === canvas.id) {
+        state.histHover = null;
+        hideTooltip(canvas);
+        drawLatencyHistograms(state.snapshot || {});
+      }
+      return;
+    }
+    const idx = Math.min(
+      nBuckets - 1,
+      Math.max(0, Math.floor((x - pad.l) / (barW + gap)))
+    );
+    const prev = state.histHover;
+    state.histHover = { canvasId: canvas.id, index: idx, x, y };
+    showHistTooltip(canvas, idx, x, y);
+    if (!prev || prev.canvasId !== canvas.id || prev.index !== idx) {
+      drawLatencyHistograms(state.snapshot || {});
+    }
+  });
+
+  canvas.addEventListener("mouseleave", () => {
+    if (state.histHover?.canvasId === canvas.id) state.histHover = null;
+    hideTooltip(canvas);
+    drawLatencyHistograms(state.snapshot || {});
+  });
+}
+
+function showHistTooltip(canvas, idx, localX, localY) {
+  const meta = canvas._hist;
+  const tip = ensureTooltip(canvas);
+  if (!meta || !tip || idx < 0) return;
+  const count = Number(meta.counts[idx]) || 0;
+  const range = formatLatencyBucket(meta.edges, idx);
+  const pct = meta.total ? ((count / meta.total) * 100).toFixed(1) : "0.0";
+  tip.innerHTML =
+    `<div class="tt-time">${meta.title}</div>` +
+    `<div class="tt-row"><span class="tt-name">Latency</span><span class="tt-val">${range}</span></div>` +
+    `<div class="tt-row"><span class="tt-name">Count</span><span class="tt-val">${count}</span></div>` +
+    `<div class="tt-row"><span class="tt-name">Share</span><span class="tt-val">${pct}%</span></div>`;
+  tip.classList.add("visible");
+
+  const frame = canvas.parentElement.getBoundingClientRect();
+  const tipW = tip.offsetWidth || 160;
+  const tipH = tip.offsetHeight || 80;
+  let left = localX + 14;
+  let top = localY - tipH - 10;
+  if (left + tipW > frame.width - 4) left = localX - tipW - 14;
+  if (top < 4) top = localY + 14;
+  tip.style.left = `${Math.max(4, left)}px`;
+  tip.style.top = `${Math.max(4, top)}px`;
+}
+
+function drawHistogram(canvas, edges, hist, color, title) {
   if (!canvas) return;
+  bindHistHover(canvas);
+
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
   const width = Math.max(240, Math.floor(rect.width));
@@ -231,6 +311,23 @@ function drawHistogram(canvas, edges, hist, color) {
   const plotH = height - pad.t - pad.b;
   const counts = hist?.counts || [];
   const nBuckets = Math.max(counts.length, edges.length + 1);
+  const gap = 1;
+  const barW = Math.max(1, (plotW - gap * (nBuckets - 1)) / nBuckets);
+  const hoverIdx = state.histHover?.canvasId === canvas.id ? state.histHover.index : -1;
+
+  canvas._hist = {
+    edges,
+    counts,
+    total: hist?.total || 0,
+    title: title || canvas.id,
+    pad,
+    plotW,
+    plotH,
+    nBuckets,
+    gap,
+    barW,
+    color,
+  };
 
   ctx.strokeStyle = "rgba(20,32,28,0.08)";
   ctx.lineWidth = 1;
@@ -253,16 +350,18 @@ function drawHistogram(canvas, edges, hist, color) {
   let maxC = 1;
   for (let i = 0; i < nBuckets; i++) maxC = Math.max(maxC, Number(counts[i]) || 0);
 
-  const gap = 1;
-  const barW = Math.max(1, (plotW - gap * (nBuckets - 1)) / nBuckets);
-  ctx.fillStyle = color;
   for (let i = 0; i < nBuckets; i++) {
     const c = Number(counts[i]) || 0;
     const h = (c / maxC) * plotH;
     const x = pad.l + i * (barW + gap);
     const y = pad.t + plotH - h;
-    ctx.globalAlpha = 0.85;
+    ctx.globalAlpha = i === hoverIdx ? 1 : 0.75;
+    ctx.fillStyle = color;
     ctx.fillRect(x, y, barW, Math.max(h, c > 0 ? 1 : 0));
+    if (i === hoverIdx) {
+      ctx.globalAlpha = 0.18;
+      ctx.fillRect(x, pad.t, barW, plotH);
+    }
   }
   ctx.globalAlpha = 1;
 

@@ -395,6 +395,7 @@ td.mono { font-family: var(--mono); font-size: 0.8rem; }
 }
 
 .hist-card {
+  position: relative;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.55);
@@ -414,6 +415,7 @@ td.mono { font-family: var(--mono); font-size: 0.8rem; }
   border-radius: 8px;
   background: linear-gradient(180deg, rgba(255,255,255,0.7), rgba(244,247,244,0.9));
   border: 1px solid var(--line);
+  cursor: crosshair;
 }
 
 .hist-meta {
