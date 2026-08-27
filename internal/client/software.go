@@ -77,6 +77,8 @@ func (w *Worker) runGitClone(ctx context.Context, cmd protocol.PhaseCommand) err
 	err = runShellCommand(ctx, dir, "git clone "+shellQuote(url))
 	elapsed := time.Since(t0)
 	w.Stats.ObserveGitClone(elapsed)
+	// Cleanup after measurement so histogram excludes delete time.
+	_ = os.RemoveAll(dir)
 	if err != nil {
 		return fmt.Errorf("git clone after %s: %w", elapsed, err)
 	}
@@ -95,14 +97,16 @@ func (w *Worker) runUntar(ctx context.Context, cmd protocol.PhaseCommand) error 
 
 	archivePath := filepath.Join(dir, ".archive"+archiveSuffix(url))
 	if err := software.DownloadFile(ctx, url, archivePath); err != nil {
+		_ = os.RemoveAll(dir)
 		return err
 	}
-	defer os.Remove(archivePath)
 
 	t0 := time.Now()
 	err = runShellCommand(ctx, dir, "tar xvf "+shellQuote(filepath.Base(archivePath)))
 	elapsed := time.Since(t0)
 	w.Stats.ObserveUntar(elapsed)
+	// Cleanup after measurement so histogram excludes delete time.
+	_ = os.RemoveAll(dir)
 	if err != nil {
 		return fmt.Errorf("tar xvf after %s: %w", elapsed, err)
 	}
