@@ -67,6 +67,18 @@ func (s *Stats) ObserveStartupWarm(d time.Duration) {
 	s.latMu.Unlock()
 }
 
+func (s *Stats) ObserveGitClone(d time.Duration) {
+	s.latMu.Lock()
+	s.latencies.GitClone.ObserveUs(float64(d.Microseconds()))
+	s.latMu.Unlock()
+}
+
+func (s *Stats) ObserveUntar(d time.Duration) {
+	s.latMu.Lock()
+	s.latencies.Untar.ObserveUs(float64(d.Microseconds()))
+	s.latMu.Unlock()
+}
+
 func (s *Stats) SnapshotAndReset() protocol.MetricSample {
 	s.latMu.Lock()
 	lat := s.latencies
@@ -234,6 +246,10 @@ func (w *Worker) Run(ctx context.Context, cmd protocol.PhaseCommand) error {
 		return w.runSoftwareStartup(ctx, cmd, true)
 	case protocol.PhaseSoftwareWarm:
 		return w.runSoftwareStartup(ctx, cmd, false)
+	case protocol.PhaseGitClone:
+		return w.runGitClone(ctx, cmd)
+	case protocol.PhaseUntar:
+		return w.runUntar(ctx, cmd)
 	case protocol.PhaseCreate:
 		w.Ledger.ResetDeleteCursor()
 		w.Ledger.ClearBW()
@@ -681,11 +697,11 @@ func writeFileDirect(path string, buf []byte, size int64) error {
 	return nil
 }
 
-// Cleanup removes test host files and any unpacked software under the prefix.
+// Cleanup removes test host files and any software tree under the test name.
 func (w *Worker) Cleanup(prefix, testName string) error {
 	root := HostRoot(prefix, testName, w.Hostname)
 	err := os.RemoveAll(root)
-	if err2 := os.RemoveAll(SoftwareDir(prefix)); err == nil {
+	if err2 := os.RemoveAll(SoftwareDir(prefix, testName)); err == nil {
 		err = err2
 	}
 	w.Ledger.Clear()

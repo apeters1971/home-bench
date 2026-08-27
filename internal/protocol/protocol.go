@@ -13,6 +13,8 @@ const (
 	PhaseSoftwareUnpack Phase = "software_unpack"
 	PhaseSoftwareCold   Phase = "software_cold"
 	PhaseSoftwareWarm   Phase = "software_warm"
+	PhaseGitClone       Phase = "git_clone"
+	PhaseUntar          Phase = "untar"
 	PhaseCreate         Phase = "create"
 	PhaseDelete         Phase = "delete"
 	PhaseWriteBW        Phase = "write_bw"
@@ -36,14 +38,20 @@ const (
 	HistoryRetention = 60 * time.Minute
 	// DefaultPhaseStepDuration is the default time spent at each 10% ramp step.
 	DefaultPhaseStepDuration = 30 * time.Second
-	// DefaultPackageURL is unpacked into <prefix>/software when software phases run.
+	// DefaultPackageURL is unpacked into <prefix>/<test>/software when software phases run.
 	DefaultPackageURL = "https://root.cern/download/root_v6.40.02.Linux-almalinux9.8-x86_64-gcc11.5.tar.gz"
-	// DefaultStartupCommand is run from <prefix>/software (cold then warm).
+	// DefaultStartupCommand is run from <prefix>/<test>/software (cold then warm).
 	DefaultStartupCommand = ". root/bin/thisroot.sh; root -b -q"
-	// SoftwareUnpackTimeout bounds download+extract per client.
+	// DefaultGitCloneURL is cloned into <prefix>/<test>/software when set.
+	DefaultGitCloneURL = "https://gitlab.cern.ch/dss/eos.git"
+	// DefaultUntarURL is downloaded and unpacked with tar xvf into software/.
+	DefaultUntarURL = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.2.tar.xz"
+	// SoftwareUnpackTimeout bounds download+extract / git clone / untar per client.
 	SoftwareUnpackTimeout = 30 * time.Minute
 	// SoftwareStartupPhaseTimeout bounds orchestrator wait for one cold/warm step.
 	SoftwareStartupPhaseTimeout = 90 * time.Second
+	// SoftwareOpTimeout bounds orchestrator wait for git clone or untar.
+	SoftwareOpTimeout = 30 * time.Minute
 	// WSPingInterval is how often ping frames are sent to keep NAT mappings alive.
 	WSPingInterval = 20 * time.Second
 	// WSReadTimeout is the idle read deadline; refreshed on pong/data.
@@ -62,7 +70,9 @@ type Config struct {
 	FileReadBandwidth  float64  `json:"file_read_bandwidth"`  // bytes/sec global
 	PhaseStepSeconds   float64  `json:"phase_step_seconds"`   // seconds at each 10% ramp step
 	PackageURL         string   `json:"package_url"`          // tarball URL for software phases
-	StartupCommand     string   `json:"startup_command"`      // shell command run from <prefix>/software
+	StartupCommand     string   `json:"startup_command"`      // shell command run from <prefix>/<test>/software
+	GitCloneURL        string   `json:"git_clone_url"`        // optional git repo URL to clone into software/
+	UntarURL           string   `json:"untar_url"`            // optional archive URL unpacked with tar xvf
 }
 
 // DefaultConfig returns sensible starting values.
@@ -77,12 +87,24 @@ func DefaultConfig() Config {
 		PhaseStepSeconds:   DefaultPhaseStepDuration.Seconds(),
 		PackageURL:         DefaultPackageURL,
 		StartupCommand:     DefaultStartupCommand,
+		GitCloneURL:        DefaultGitCloneURL,
+		UntarURL:           DefaultUntarURL,
 	}
 }
 
 // SoftwareEnabled is true when package URL and startup command are both set.
 func (c Config) SoftwareEnabled() bool {
 	return strings.TrimSpace(c.PackageURL) != "" && strings.TrimSpace(c.StartupCommand) != ""
+}
+
+// GitCloneEnabled is true when a git clone URL is configured.
+func (c Config) GitCloneEnabled() bool {
+	return strings.TrimSpace(c.GitCloneURL) != ""
+}
+
+// UntarEnabled is true when an untar archive URL is configured.
+func (c Config) UntarEnabled() bool {
+	return strings.TrimSpace(c.UntarURL) != ""
 }
 
 // PhaseStepDuration returns the configured ramp-step length.
@@ -144,6 +166,8 @@ type PhaseCommand struct {
 	CountHint      int64   `json:"count_hint"`  // expected files for delete/bw phases
 	PackageURL     string  `json:"package_url,omitempty"`
 	StartupCommand string  `json:"startup_command,omitempty"`
+	GitCloneURL    string  `json:"git_clone_url,omitempty"`
+	UntarURL       string  `json:"untar_url,omitempty"`
 }
 
 // Envelope is the WebSocket / HTTP message wrapper.
@@ -219,15 +243,18 @@ var PhaseOrder = []Phase{
 	PhaseFinalDelete,
 }
 
-// EffectivePhaseOrder includes software phases when configured.
+// EffectivePhaseOrder includes optional software / git / untar phases when configured.
 func EffectivePhaseOrder(cfg Config) []Phase {
-	if !cfg.SoftwareEnabled() {
-		out := make([]Phase, len(PhaseOrder))
-		copy(out, PhaseOrder)
-		return out
+	out := make([]Phase, 0, len(PhaseOrder)+5)
+	if cfg.SoftwareEnabled() {
+		out = append(out, PhaseSoftwareUnpack, PhaseSoftwareCold, PhaseSoftwareWarm)
 	}
-	out := make([]Phase, 0, len(PhaseOrder)+3)
-	out = append(out, PhaseSoftwareUnpack, PhaseSoftwareCold, PhaseSoftwareWarm)
+	if cfg.GitCloneEnabled() {
+		out = append(out, PhaseGitClone)
+	}
+	if cfg.UntarEnabled() {
+		out = append(out, PhaseUntar)
+	}
 	out = append(out, PhaseOrder...)
 	return out
 }
@@ -242,6 +269,10 @@ func PhaseLabel(p Phase) string {
 		return "Software Cold"
 	case PhaseSoftwareWarm:
 		return "Software Warm"
+	case PhaseGitClone:
+		return "Git Clone"
+	case PhaseUntar:
+		return "Untar"
 	case PhaseCreate:
 		return "Create"
 	case PhaseDelete:

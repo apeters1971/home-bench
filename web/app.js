@@ -2,6 +2,8 @@ const PHASE_LABELS = {
   software_unpack: "Software Unpack",
   software_cold: "Software Cold",
   software_warm: "Software Warm",
+  git_clone: "Git Clone",
+  untar: "Untar",
   create: "Create",
   delete: "Delete",
   write_bw: "Write BW",
@@ -15,6 +17,8 @@ const PHASE_BANDS = {
   software_unpack: { fill: "rgba(88, 28, 135, 0.10)", stroke: "#6b21a8", label: "Unpack" },
   software_cold:   { fill: "rgba(14, 116, 144, 0.12)", stroke: "#0e7490", label: "Cold" },
   software_warm:   { fill: "rgba(190, 24, 93, 0.10)",  stroke: "#be185d", label: "Warm" },
+  git_clone:       { fill: "rgba(22, 101, 52, 0.12)",  stroke: "#166534", label: "Git" },
+  untar:           { fill: "rgba(120, 53, 15, 0.12)",  stroke: "#9a3412", label: "Untar" },
   create:       { fill: "rgba(15, 122, 95, 0.12)",  stroke: "#0f7a5f", label: "Create" },
   delete:       { fill: "rgba(180, 83, 9, 0.12)",   stroke: "#b45309", label: "Delete" },
   write_bw:     { fill: "rgba(71, 85, 105, 0.14)",  stroke: "#334155", label: "Write BW" },
@@ -84,12 +88,31 @@ function softwareEnabled(cfg) {
   return !!(String(cfg?.package_url || "").trim() && String(cfg?.startup_command || "").trim());
 }
 
+function gitCloneEnabled(cfg) {
+  return !!String(cfg?.git_clone_url || "").trim();
+}
+
+function untarEnabled(cfg) {
+  return !!String(cfg?.untar_url || "").trim();
+}
+
 function spanDurationSec(span) {
   if (!span?.start || !span?.end) return null;
   return Math.max(0, (new Date(span.end).getTime() - new Date(span.start).getTime()) / 1000);
 }
 
-// Planned wall time for a full run (ramps are fixed; software unpack varies).
+function addMeasuredOrApprox(spans, phase, fallbackSec, tips) {
+  const sp = (spans || []).find((s) => s.phase === phase);
+  const d = spanDurationSec(sp);
+  if (d != null) {
+    tips.push(`${PHASE_LABELS[phase] || phase} (measured): ${Math.round(d)}s`);
+    return { sec: d, approx: false };
+  }
+  tips.push(`${PHASE_LABELS[phase] || phase}: variable`);
+  return { sec: fallbackSec, approx: true };
+}
+
+// Planned wall time for a full run (ramps are fixed; software/git/untar vary).
 function estimatedRuntime(cfg, spans) {
   const step = Math.max(1, Number(cfg?.phase_step_seconds) || 30);
   // create(10) + delete(10+1) + write(10) + read(10) + r+w(10) + final(10+1)
@@ -98,15 +121,9 @@ function estimatedRuntime(cfg, spans) {
   const tips = [`IO ramps: ${62 * step}s (${step}s × 62 steps)`];
 
   if (softwareEnabled(cfg)) {
-    const unpack = (spans || []).find((s) => s.phase === "software_unpack");
-    const unpackSec = spanDurationSec(unpack);
-    if (unpackSec != null) {
-      sec += unpackSec;
-      tips.push(`Software unpack (measured): ${Math.round(unpackSec)}s`);
-    } else {
-      approx = true;
-      tips.push("Software unpack: variable (download/extract, not included until finished)");
-    }
+    const unpack = addMeasuredOrApprox(spans, "software_unpack", 0, tips);
+    sec += unpack.sec;
+    approx = approx || unpack.approx;
     for (const phase of ["software_cold", "software_warm"]) {
       const sp = (spans || []).find((s) => s.phase === phase);
       const d = spanDurationSec(sp);
@@ -114,10 +131,20 @@ function estimatedRuntime(cfg, spans) {
         sec += d;
         tips.push(`${PHASE_LABELS[phase] || phase} (measured): ${Math.round(d)}s`);
       } else {
-        sec += 60; // startup command timeout budget
+        sec += 60;
         tips.push(`${PHASE_LABELS[phase] || phase}: ~60s`);
       }
     }
+  }
+  if (gitCloneEnabled(cfg)) {
+    const g = addMeasuredOrApprox(spans, "git_clone", 0, tips);
+    sec += g.sec;
+    approx = approx || g.approx;
+  }
+  if (untarEnabled(cfg)) {
+    const u = addMeasuredOrApprox(spans, "untar", 0, tips);
+    sec += u.sec;
+    approx = approx || u.approx;
   }
 
   return { sec, approx, title: tips.join(" · ") };
@@ -171,6 +198,8 @@ function applyConfigForm(cfg) {
   form.phase_step_seconds.value = cfg.phase_step_seconds ?? 30;
   form.package_url.value = cfg.package_url || "";
   form.startup_command.value = cfg.startup_command || "";
+  form.git_clone_url.value = cfg.git_clone_url || "";
+  form.untar_url.value = cfg.untar_url || "";
 }
 
 function render(snap) {
@@ -326,6 +355,8 @@ function drawLatencyHistograms(snap) {
     { id: "hist-read", meta: "hist-read-meta", hist: lat.read, color: "#1f5fbf", title: "Read" },
     { id: "hist-startup-cold", meta: "hist-startup-cold-meta", hist: lat.startup_cold, color: "#0e7490", title: "Startup Cold" },
     { id: "hist-startup-warm", meta: "hist-startup-warm-meta", hist: lat.startup_warm, color: "#be185d", title: "Startup Warm" },
+    { id: "hist-git-clone", meta: "hist-git-clone-meta", hist: lat.git_clone, color: "#166534", title: "Git Clone" },
+    { id: "hist-untar", meta: "hist-untar-meta", hist: lat.untar, color: "#9a3412", title: "Untar" },
   ];
   for (const s of specs) {
     drawHistogram($(s.id), edges, s.hist, s.color, s.title);
@@ -760,7 +791,9 @@ function drawPhaseBands(ctx, spans, tMin, tMax, pad, plotW, plotH, history, cfg,
       } else if (
         span.phase === "software_unpack" ||
         span.phase === "software_cold" ||
-        span.phase === "software_warm"
+        span.phase === "software_warm" ||
+        span.phase === "git_clone" ||
+        span.phase === "untar"
       ) {
         endLabel = formatPhaseDuration(end - start);
       }
@@ -1070,6 +1103,8 @@ async function saveConfig(ev) {
     phase_step_seconds: Number(form.phase_step_seconds.value),
     package_url: form.package_url.value.trim(),
     startup_command: form.startup_command.value.trim(),
+    git_clone_url: form.git_clone_url.value.trim(),
+    untar_url: form.untar_url.value.trim(),
   };
   const res = await fetch("/api/config", {
     method: "PUT",
@@ -1157,6 +1192,8 @@ function latencySummaryHTML(snap) {
     ["Read", lat.read],
     ["Software Startup Cold", lat.startup_cold],
     ["Software Startup Warm", lat.startup_warm],
+    ["Git Clone", lat.git_clone],
+    ["Untar", lat.untar],
   ];
   return specs.map(([title, hist], i) => {
     const imgId = [
@@ -1166,6 +1203,8 @@ function latencySummaryHTML(snap) {
       "hist-read",
       "hist-startup-cold",
       "hist-startup-warm",
+      "hist-git-clone",
+      "hist-untar",
     ][i];
     const src = canvasPNG(imgId);
     const meta = formatLatencyMeta(hist, edges);
@@ -1275,6 +1314,8 @@ function downloadReport() {
     <p class="kv"><span>Read bandwidth</span><strong class="mono">${escapeHTML(((cfg.file_read_bandwidth || 0) / MiB).toFixed(1))} MiB/s</strong></p>
     <p class="kv"><span>Package URL</span><strong class="mono">${escapeHTML(cfg.package_url || "—")}</strong></p>
     <p class="kv"><span>Startup command</span><strong class="mono">${escapeHTML(cfg.startup_command || "—")}</strong></p>
+    <p class="kv"><span>GIT Clone</span><strong class="mono">${escapeHTML(cfg.git_clone_url || "—")}</strong></p>
+    <p class="kv"><span>UNTAR</span><strong class="mono">${escapeHTML(cfg.untar_url || "—")}</strong></p>
   </div>
   <p class="kv" style="margin-top:12px"><span>Prefixes</span></p>
   <ul>${prefixes}</ul>

@@ -24,9 +24,9 @@ func HostRoot(prefix, testName, hostname string) string {
 	return filepath.Join(prefix, testName, hostname)
 }
 
-// SoftwareDir is where package unpack + startup commands run: <prefix>/software
-func SoftwareDir(prefix string) string {
-	return filepath.Join(prefix, "software")
+// SoftwareDir is where package/git/tar ops run: <prefix>/<testName>/software
+func SoftwareDir(prefix, testName string) string {
+	return filepath.Join(prefix, testName, "software")
 }
 
 func EnsureParent(path string) error {

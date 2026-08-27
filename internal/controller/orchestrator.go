@@ -245,10 +245,10 @@ func (o *Orchestrator) run(ctx context.Context, cfg protocol.Config, nClients in
 	readBW := o.perClient(cfg.FileReadBandwidth, nClients)
 	step := cfg.PhaseStepDuration()
 
-	log.Printf("orchestrator: start with %d clients step=%s create=%.1f/s delete=%.1f/s write=%.0f B/s read=%.0f B/s software=%v",
-		nClients, step, createRate, deleteRate, writeBW, readBW, cfg.SoftwareEnabled())
+	log.Printf("orchestrator: start with %d clients step=%s create=%.1f/s delete=%.1f/s write=%.0f B/s read=%.0f B/s software=%v git=%v untar=%v",
+		nClients, step, createRate, deleteRate, writeBW, readBW, cfg.SoftwareEnabled(), cfg.GitCloneEnabled(), cfg.UntarEnabled())
 
-	// Optional: unpack package into <prefix>/software, then cold + warm startup.
+	// Optional: unpack package into <prefix>/<test>/software, then cold + warm startup.
 	if cfg.SoftwareEnabled() {
 		if err := o.runSoftwarePhase(ctx, protocol.PhaseSoftwareUnpack, protocol.SoftwareUnpackTimeout); err != nil {
 			return
@@ -257,6 +257,18 @@ func (o *Orchestrator) run(ctx context.Context, cfg protocol.Config, nClients in
 			return
 		}
 		if err := o.runSoftwarePhase(ctx, protocol.PhaseSoftwareWarm, protocol.SoftwareStartupPhaseTimeout); err != nil {
+			return
+		}
+	}
+
+	// Optional: git clone and/or tar xvf into <prefix>/<test>/software.
+	if cfg.GitCloneEnabled() {
+		if err := o.runSoftwarePhase(ctx, protocol.PhaseGitClone, protocol.SoftwareOpTimeout); err != nil {
+			return
+		}
+	}
+	if cfg.UntarEnabled() {
+		if err := o.runSoftwarePhase(ctx, protocol.PhaseUntar, protocol.SoftwareOpTimeout); err != nil {
 			return
 		}
 	}
@@ -307,9 +319,11 @@ func (o *Orchestrator) runSoftwarePhase(ctx context.Context, phase protocol.Phas
 		TestName:       cfg.TestName,
 		PackageURL:     cfg.PackageURL,
 		StartupCommand: cfg.StartupCommand,
+		GitCloneURL:    cfg.GitCloneURL,
+		UntarURL:       cfg.UntarURL,
 	}
 	o.broadcast.Broadcast(protocol.Envelope{Type: "command", Command: cmd})
-	log.Printf("orchestrator: phase=%s timeout=%s package=%s", phase, timeout, cfg.PackageURL)
+	log.Printf("orchestrator: phase=%s timeout=%s", phase, timeout)
 
 	return o.waitClientsIdle(ctx, timeout)
 }

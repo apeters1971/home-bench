@@ -18,13 +18,25 @@ import (
 
 const softwareStartupTimeout = 60 * time.Second
 
-func (w *Worker) runSoftwareUnpack(ctx context.Context, cmd protocol.PhaseCommand) error {
-	dir := SoftwareDir(cmd.Prefix)
+func (w *Worker) softwareDir(cmd protocol.PhaseCommand) string {
+	return SoftwareDir(cmd.Prefix, cmd.TestName)
+}
+
+func (w *Worker) prepareSoftwareDir(cmd protocol.PhaseCommand) (string, error) {
+	dir := w.softwareDir(cmd)
 	if err := os.RemoveAll(dir); err != nil {
-		return fmt.Errorf("clear software dir: %w", err)
+		return "", fmt.Errorf("clear software dir: %w", err)
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("mkdir software: %w", err)
+		return "", fmt.Errorf("mkdir software: %w", err)
+	}
+	return dir, nil
+}
+
+func (w *Worker) runSoftwareUnpack(ctx context.Context, cmd protocol.PhaseCommand) error {
+	dir, err := w.prepareSoftwareDir(cmd)
+	if err != nil {
+		return err
 	}
 	url := strings.TrimSpace(cmd.PackageURL)
 	if url == "" {
@@ -41,7 +53,7 @@ func (w *Worker) runSoftwareUnpack(ctx context.Context, cmd protocol.PhaseComman
 }
 
 func (w *Worker) runSoftwareStartup(ctx context.Context, cmd protocol.PhaseCommand, cold bool) error {
-	dir := SoftwareDir(cmd.Prefix)
+	dir := w.softwareDir(cmd)
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 		return fmt.Errorf("software dir missing: %s", dir)
 	}
@@ -54,7 +66,7 @@ func (w *Worker) runSoftwareStartup(ctx context.Context, cmd protocol.PhaseComma
 	defer cancel()
 
 	t0 := time.Now()
-	err := runStartupCommand(runCtx, dir, startup)
+	err := runShellCommand(runCtx, dir, startup)
 	elapsed := time.Since(t0)
 	if cold {
 		w.Stats.ObserveStartupCold(elapsed)
@@ -64,11 +76,77 @@ func (w *Worker) runSoftwareStartup(ctx context.Context, cmd protocol.PhaseComma
 	if err != nil {
 		return fmt.Errorf("startup (cold=%v) after %s: %w", cold, elapsed, err)
 	}
-	// After warm measurement, free the unpacked tree before IO phases.
+	// After warm measurement, free the unpacked tree before later phases.
 	if !cold {
 		_ = os.RemoveAll(dir)
 	}
 	return nil
+}
+
+func (w *Worker) runGitClone(ctx context.Context, cmd protocol.PhaseCommand) error {
+	dir, err := w.prepareSoftwareDir(cmd)
+	if err != nil {
+		return err
+	}
+	url := strings.TrimSpace(cmd.GitCloneURL)
+	if url == "" {
+		return fmt.Errorf("git_clone_url is empty")
+	}
+
+	t0 := time.Now()
+	err = runShellCommand(ctx, dir, "git clone "+shellQuote(url))
+	elapsed := time.Since(t0)
+	w.Stats.ObserveGitClone(elapsed)
+	if err != nil {
+		return fmt.Errorf("git clone after %s: %w", elapsed, err)
+	}
+	return nil
+}
+
+func (w *Worker) runUntar(ctx context.Context, cmd protocol.PhaseCommand) error {
+	dir, err := w.prepareSoftwareDir(cmd)
+	if err != nil {
+		return err
+	}
+	url := strings.TrimSpace(cmd.UntarURL)
+	if url == "" {
+		return fmt.Errorf("untar_url is empty")
+	}
+
+	archivePath := filepath.Join(dir, ".archive"+archiveSuffix(url))
+	if err := downloadFile(ctx, url, archivePath); err != nil {
+		return err
+	}
+	defer os.Remove(archivePath)
+
+	t0 := time.Now()
+	err = runShellCommand(ctx, dir, "tar xvf "+shellQuote(filepath.Base(archivePath)))
+	elapsed := time.Since(t0)
+	w.Stats.ObserveUntar(elapsed)
+	if err != nil {
+		return fmt.Errorf("tar xvf after %s: %w", elapsed, err)
+	}
+	return nil
+}
+
+func archiveSuffix(url string) string {
+	u := strings.ToLower(url)
+	switch {
+	case strings.HasSuffix(u, ".tar.gz"), strings.HasSuffix(u, ".tgz"):
+		return ".tar.gz"
+	case strings.HasSuffix(u, ".tar.bz2"), strings.HasSuffix(u, ".tbz2"):
+		return ".tar.bz2"
+	case strings.HasSuffix(u, ".tar.xz"), strings.HasSuffix(u, ".txz"):
+		return ".tar.xz"
+	case strings.HasSuffix(u, ".tar"):
+		return ".tar"
+	default:
+		return ".tar"
+	}
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
 func downloadFile(ctx context.Context, url, dest string) error {
@@ -169,7 +247,7 @@ func extractTarEntry(dest string, hdr *tar.Header, r io.Reader) error {
 	}
 }
 
-func runStartupCommand(ctx context.Context, dir, command string) error {
+func runShellCommand(ctx context.Context, dir, command string) error {
 	c := exec.CommandContext(ctx, "bash", "-lc", command)
 	c.Dir = dir
 	c.Env = os.Environ()

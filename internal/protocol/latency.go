@@ -83,6 +83,8 @@ type LatencySet struct {
 	Read         LatencyHistogram `json:"read"`
 	StartupCold  LatencyHistogram `json:"startup_cold"`
 	StartupWarm  LatencyHistogram `json:"startup_warm"`
+	GitClone     LatencyHistogram `json:"git_clone"`
+	Untar        LatencyHistogram `json:"untar"`
 }
 
 func NewLatencySet() LatencySet {
@@ -93,6 +95,8 @@ func NewLatencySet() LatencySet {
 		Read:        NewLatencyHistogram(),
 		StartupCold: NewLatencyHistogram(),
 		StartupWarm: NewLatencyHistogram(),
+		GitClone:    NewLatencyHistogram(),
+		Untar:       NewLatencyHistogram(),
 	}
 }
 
@@ -103,6 +107,8 @@ func (s *LatencySet) Merge(other LatencySet) {
 	s.Read.Merge(other.Read)
 	s.StartupCold.Merge(other.StartupCold)
 	s.StartupWarm.Merge(other.StartupWarm)
+	s.GitClone.Merge(other.GitClone)
+	s.Untar.Merge(other.Untar)
 }
 
 func (s LatencySet) Clone() LatencySet {
@@ -113,5 +119,7 @@ func (s LatencySet) Clone() LatencySet {
 		Read:        s.Read.Clone(),
 		StartupCold: s.StartupCold.Clone(),
 		StartupWarm: s.StartupWarm.Clone(),
+		GitClone:    s.GitClone.Clone(),
+		Untar:       s.Untar.Clone(),
 	}
 }
