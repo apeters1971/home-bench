@@ -80,11 +80,11 @@
             <input name="startup_command" type="text" placeholder=". root/bin/thisroot.sh; root -b -q" />
           </label>
           <label>
-            GIT Clone <span class="hint">optional · git clone into &lt;prefix&gt;/&lt;test&gt;/software</span>
+            GIT Clone <span class="hint">optional · per-host under &lt;prefix&gt;/&lt;test&gt;/&lt;hostname&gt;/git</span>
             <input name="git_clone_url" type="url" placeholder="https://gitlab.cern.ch/dss/eos.git" />
           </label>
           <label>
-            UNTAR <span class="hint">optional · download + tar xvf into &lt;prefix&gt;/&lt;test&gt;/software</span>
+            UNTAR <span class="hint">optional · per-host download + tar xvf under &lt;prefix&gt;/&lt;test&gt;/&lt;hostname&gt;/untar</span>
             <input name="untar_url" type="url" placeholder="https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.2.tar.xz" />
           </label>
           <button type="submit" class="btn secondary">Save configuration</button>

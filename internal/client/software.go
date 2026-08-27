@@ -19,13 +19,15 @@ func (w *Worker) softwareDir(cmd protocol.PhaseCommand) string {
 	return software.Dir(cmd.Prefix, cmd.TestName)
 }
 
-func (w *Worker) prepareSoftwareDir(cmd protocol.PhaseCommand) (string, error) {
-	dir := w.softwareDir(cmd)
+// prepareHostWorkDir clears/creates a per-machine subdirectory under
+// <prefix>/<test>/<hostname>/<sub> for client-local ops (git/untar).
+func (w *Worker) prepareHostWorkDir(cmd protocol.PhaseCommand, sub string) (string, error) {
+	dir := filepath.Join(HostRoot(cmd.Prefix, cmd.TestName, w.Hostname), sub)
 	if err := os.RemoveAll(dir); err != nil {
-		return "", fmt.Errorf("clear software dir: %w", err)
+		return "", fmt.Errorf("clear %s: %w", dir, err)
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("mkdir software: %w", err)
+		return "", fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 	return dir, nil
 }
@@ -62,7 +64,7 @@ func (w *Worker) runSoftwareStartup(ctx context.Context, cmd protocol.PhaseComma
 }
 
 func (w *Worker) runGitClone(ctx context.Context, cmd protocol.PhaseCommand) error {
-	dir, err := w.prepareSoftwareDir(cmd)
+	dir, err := w.prepareHostWorkDir(cmd, "git")
 	if err != nil {
 		return err
 	}
@@ -82,7 +84,7 @@ func (w *Worker) runGitClone(ctx context.Context, cmd protocol.PhaseCommand) err
 }
 
 func (w *Worker) runUntar(ctx context.Context, cmd protocol.PhaseCommand) error {
-	dir, err := w.prepareSoftwareDir(cmd)
+	dir, err := w.prepareHostWorkDir(cmd, "untar")
 	if err != nil {
 		return err
 	}

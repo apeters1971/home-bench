@@ -26,7 +26,7 @@ func HostRoot(prefix, testName, hostname string) string {
 	return filepath.Join(prefix, testName, hostname)
 }
 
-// SoftwareDir is where package/git/tar ops run: <prefix>/<testName>/software
+// SoftwareDir is the shared package tree: <prefix>/<testName>/software
 func SoftwareDir(prefix, testName string) string {
 	return software.Dir(prefix, testName)
 }

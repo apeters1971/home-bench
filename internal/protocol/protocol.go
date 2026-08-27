@@ -71,8 +71,8 @@ type Config struct {
 	PhaseStepSeconds   float64  `json:"phase_step_seconds"`   // seconds at each 10% ramp step
 	PackageURL         string   `json:"package_url"`          // tarball URL for software phases
 	StartupCommand     string   `json:"startup_command"`      // shell command run from <prefix>/<test>/software
-	GitCloneURL        string   `json:"git_clone_url"`        // optional git repo URL to clone into software/
-	UntarURL           string   `json:"untar_url"`            // optional archive URL unpacked with tar xvf
+	GitCloneURL        string   `json:"git_clone_url"`        // optional git repo URL cloned per-host
+	UntarURL           string   `json:"untar_url"`            // optional archive URL unpacked per-host with tar xvf
 }
 
 // DefaultConfig returns sensible starting values.
