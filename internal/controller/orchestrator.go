@@ -291,6 +291,8 @@ func (o *Orchestrator) run(ctx context.Context, cfg protocol.Config, nClients in
 		if err := o.runSoftwarePhase(ctx, protocol.PhaseSoftwareWarm, protocol.SoftwareStartupWarmTimeout); err != nil {
 			return
 		}
+		// One controller-side cleanup (not N concurrent client deletes on the shared tree).
+		o.cleanupSoftwareAsync(cfg)
 	}
 
 	// Optional: git clone and/or tar xvf into <prefix>/<test>/software.
@@ -353,6 +355,25 @@ func (o *Orchestrator) runControllerUnpack(ctx context.Context) error {
 	}
 	log.Printf("orchestrator: software unpack complete")
 	return nil
+}
+
+// cleanupSoftwareAsync removes shared <prefix>/<test>/software trees without blocking the run.
+func (o *Orchestrator) cleanupSoftwareAsync(cfg protocol.Config) {
+	prefixes := append([]string(nil), cfg.Prefixes...)
+	testName := cfg.TestName
+	go func() {
+		for _, prefix := range prefixes {
+			prefix = strings.TrimSpace(prefix)
+			if prefix == "" {
+				continue
+			}
+			dir := software.Dir(prefix, testName)
+			log.Printf("orchestrator: cleaning software tree %s", dir)
+			if err := os.RemoveAll(dir); err != nil {
+				log.Printf("orchestrator: software cleanup %s: %v", dir, err)
+			}
+		}
+	}()
 }
 
 func (o *Orchestrator) runSoftwarePhase(ctx context.Context, phase protocol.Phase, timeout time.Duration) error {

@@ -67,10 +67,8 @@ func (w *Worker) runSoftwareStartup(ctx context.Context, cmd protocol.PhaseComma
 	if err != nil {
 		return fmt.Errorf("startup (cold=%v) after %s: %w", cold, elapsed, err)
 	}
-	// After warm measurement, free the shared tree before later phases.
-	if !cold {
-		_ = os.RemoveAll(dir)
-	}
+	// Shared software tree is removed by the controller after warm completes,
+	// so clients can report idle immediately (RemoveAll would block the phase).
 	return nil
 }
 
