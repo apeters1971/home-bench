@@ -357,13 +357,12 @@ function resultsPhaseRows(snap) {
   const rows = [];
   for (const span of spans) {
     if (!span.end) continue;
-    const iops = phaseChartEndLabel(span, smoothed, cfg, false, bwFiles);
-    const bw = phaseChartEndLabel(span, smoothed, cfg, true, bwFiles);
-    if (iops == null && bw == null) continue;
+    // Prefer IOPS-chart end label (attainment % or duration); matches primary chart labels.
+    const value = phaseChartEndLabel(span, smoothed, cfg, false, bwFiles);
+    if (value == null) continue;
     rows.push({
       phase: PHASE_LABELS[span.phase] || span.phase,
-      iops: iops || "—",
-      bw: bw || "—",
+      value,
     });
   }
   return rows;
@@ -396,7 +395,7 @@ function renderResults(snap) {
   }
   panel.hidden = false;
 
-  const phaseSig = phaseRows.map((r) => `${r.phase}\0${r.iops}\0${r.bw}`).join("\n");
+  const phaseSig = phaseRows.map((r) => `${r.phase}\0${r.value}`).join("\n");
   if (phaseBody.dataset.sig !== phaseSig) {
     phaseBody.dataset.sig = phaseSig;
     phaseBody.innerHTML = phaseRows.length
@@ -404,12 +403,11 @@ function renderResults(snap) {
           .map(
             (r) => `<tr>
         <td>${escapeHtml(r.phase)}</td>
-        <td>${escapeHtml(r.iops)}</td>
-        <td>${escapeHtml(r.bw)}</td>
+        <td>${escapeHtml(r.value)}</td>
       </tr>`
           )
           .join("")
-      : `<tr><td colspan="3">No finished phases yet</td></tr>`;
+      : `<tr><td colspan="2">No finished phases yet</td></tr>`;
   }
 
   const latSig = latRows.map((r) => `${r.title}\0${r.avg}`).join("\n");
@@ -435,13 +433,12 @@ function resultsSummaryHTML(snap) {
 
   const phaseTable = phaseRows.length
     ? `<table>
-      <thead><tr><th>Phase</th><th>IOPS</th><th>Bandwidth</th></tr></thead>
+      <thead><tr><th>Phase</th><th>Duration/Efficiency</th></tr></thead>
       <tbody>${phaseRows
         .map(
           (r) => `<tr>
         <td>${escapeHTML(r.phase)}</td>
-        <td class="mono">${escapeHTML(r.iops)}</td>
-        <td class="mono">${escapeHTML(r.bw)}</td>
+        <td class="mono">${escapeHTML(r.value)}</td>
       </tr>`
         )
         .join("")}</tbody>
