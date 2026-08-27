@@ -122,6 +122,11 @@ html, body {
   font-weight: 600;
 }
 
+.value.failed {
+  color: var(--danger);
+  font-weight: 700;
+}
+
 .mono { font-family: var(--mono); }
 
 main {

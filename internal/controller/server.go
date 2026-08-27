@@ -131,15 +131,15 @@ func (s *Server) StartBackground() {
 		t := time.NewTicker(2 * time.Second)
 		defer t.Stop()
 		for range t.C {
-			for _, id := range s.registry.Prune(protocol.ClientStaleAfter) {
+			for _, info := range s.registry.Prune(protocol.ClientStaleAfter) {
 				s.mu.Lock()
-				if c, ok := s.clients[id]; ok {
+				if c, ok := s.clients[info.ID]; ok {
 					_ = c.conn.Close()
-					delete(s.clients, id)
+					delete(s.clients, info.ID)
 				}
 				s.mu.Unlock()
-				s.orch.OnClientRemoved(id)
-				log.Printf("pruned stale client %s", id)
+				s.orch.OnClientRemoved(info.ID, info.Hostname)
+				log.Printf("pruned stale client %s", info.ID)
 			}
 			s.requestUI()
 		}
@@ -231,7 +231,11 @@ func (s *Server) handleClientWS(w http.ResponseWriter, r *http.Request) {
 		if clientID != "" {
 			s.mu.Lock()
 			removed := false
+			host := ""
 			if cur, ok := s.clients[clientID]; ok && cur.conn == conn {
+				if info, ok := s.registry.Lookup(clientID); ok {
+					host = info.Hostname
+				}
 				delete(s.clients, clientID)
 				s.registry.Remove(clientID)
 				removed = true
@@ -239,7 +243,7 @@ func (s *Server) handleClientWS(w http.ResponseWriter, r *http.Request) {
 			}
 			s.mu.Unlock()
 			if removed {
-				s.orch.OnClientRemoved(clientID)
+				s.orch.OnClientRemoved(clientID, host)
 			}
 			s.requestUI()
 		}

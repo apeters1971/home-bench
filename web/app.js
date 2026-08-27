@@ -261,6 +261,10 @@ function render(snap) {
       ? `${participants}/${totalClients}`
       : String(totalClients);
   $("status-text").textContent = snap.status_text || "Ready";
+  $("status-text").classList.toggle(
+    "failed",
+    /^failed\b/i.test(String(snap.status_text || ""))
+  );
   $("percent").textContent = snap.running && snap.percent ? `${snap.percent}%` : "";
   const hostEl = $("controller-host");
   if (hostEl) {

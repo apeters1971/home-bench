@@ -43,6 +43,7 @@ type Orchestrator struct {
 	startedAt  *time.Time
 	elapsedSec float64 // frozen when the run ends (Completed / Stopped)
 	statusText string
+	failMessage string // non-empty → run ends as FAILED RUN
 	cancel     context.CancelFunc
 	phaseSpans []protocol.PhaseSpan
 
@@ -199,10 +200,54 @@ func (o *Orchestrator) OnClientRegistered(id string) {
 }
 
 // OnClientRemoved drops a client from the selection set.
-func (o *Orchestrator) OnClientRemoved(id string) {
+// If that client is a frozen run participant, the run is aborted as FAILED.
+func (o *Orchestrator) OnClientRemoved(id, hostname string) {
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	delete(o.selectedIDs, id)
+	if !o.running || o.failMessage != "" {
+		o.mu.Unlock()
+		return
+	}
+	participant := false
+	for _, x := range o.runClientIDs {
+		if x == id {
+			participant = true
+			break
+		}
+	}
+	if !participant {
+		o.mu.Unlock()
+		return
+	}
+	label := strings.TrimSpace(hostname)
+	if label == "" {
+		label = id
+		if len(label) > 8 {
+			label = label[:8]
+		}
+	}
+	msg := fmt.Sprintf("FAILED RUN — participant lost (%s)", label)
+	cancel := o.cancel
+	o.cancel = nil
+	o.failMessage = msg
+	o.statusText = msg
+	o.phase = protocol.PhaseStopped
+	o.percent = 0
+	o.closePhaseSpanLocked(time.Now())
+	if o.startedAt != nil {
+		o.elapsedSec = time.Since(*o.startedAt).Seconds()
+	}
+	o.mu.Unlock()
+
+	log.Printf("orchestrator: %s", msg)
+	if cancel != nil {
+		cancel()
+	}
+	o.broadcastRun(protocol.Envelope{
+		Type: "stop",
+		Stop: &protocol.StopMsg{Cleanup: true},
+	})
+	o.metrics.Freeze()
 }
 
 // SetSelectedClients replaces the participant selection (idle only).
@@ -300,6 +345,7 @@ func (o *Orchestrator) Start() error {
 	o.running = true
 	o.runClientIDs = participants
 	o.autoSelectNew = false // lock set: newcomers stay unselected until explicitly chosen
+	o.failMessage = ""
 	now := time.Now()
 	o.startedAt = &now
 	o.elapsedSec = 0
@@ -319,6 +365,11 @@ func (o *Orchestrator) Start() error {
 func (o *Orchestrator) Stop() {
 	o.mu.Lock()
 	if !o.running {
+		o.mu.Unlock()
+		return
+	}
+	if o.failMessage != "" {
+		// Already failing; leave fail status in place.
 		o.mu.Unlock()
 		return
 	}
@@ -382,8 +433,12 @@ func (o *Orchestrator) finish(text string) {
 	if o.startedAt != nil {
 		o.elapsedSec = time.Since(*o.startedAt).Seconds()
 	}
+	if o.failMessage != "" {
+		text = o.failMessage
+	}
 	o.running = false
 	o.runClientIDs = nil
+	o.failMessage = ""
 	o.phase = protocol.PhaseIdle
 	o.percent = 0
 	o.statusText = text
@@ -399,6 +454,13 @@ func (o *Orchestrator) perClient(global float64, n int) float64 {
 
 func (o *Orchestrator) run(ctx context.Context, cfg protocol.Config, nClients int) {
 	defer func() {
+		o.mu.RLock()
+		failed := o.failMessage != ""
+		o.mu.RUnlock()
+		if failed {
+			o.finish("FAILED RUN")
+			return
+		}
 		if ctx.Err() != nil {
 			o.finish("Stopped")
 			return
@@ -579,11 +641,8 @@ func (o *Orchestrator) waitClientsIdle(ctx context.Context, timeout time.Duratio
 					allIdle = false
 				}
 			}
-			// Disconnected participants are treated as done.
-			if seenWanted == 0 && len(want) > 0 && time.Now().After(grace) {
-				return nil
-			}
-			if seenWanted == 0 {
+			// Missing participants are not "done" — OnClientRemoved aborts the run.
+			if seenWanted < len(want) {
 				continue
 			}
 			if sawRunning && allIdle && !anyRunning {

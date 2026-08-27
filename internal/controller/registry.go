@@ -50,6 +50,16 @@ func (r *Registry) SetStatus(id, status string, phase protocol.Phase) {
 	}
 }
 
+func (r *Registry) Lookup(id string) (protocol.ClientInfo, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	c, ok := r.clients[id]
+	if !ok || c == nil {
+		return protocol.ClientInfo{}, false
+	}
+	return *c, true
+}
+
 func (r *Registry) Remove(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -92,14 +102,15 @@ func (r *Registry) ReassignPrefixes(prefixes []string) {
 }
 
 // Prune removes clients that have not been seen within ttl.
-func (r *Registry) Prune(ttl time.Duration) []string {
+func (r *Registry) Prune(ttl time.Duration) []protocol.ClientInfo {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	cutoff := time.Now().Add(-ttl)
-	var gone []string
+	var gone []protocol.ClientInfo
 	for id, c := range r.clients {
 		if c.LastSeen.Before(cutoff) {
-			gone = append(gone, id)
+			cp := *c
+			gone = append(gone, cp)
 			delete(r.clients, id)
 		}
 	}
