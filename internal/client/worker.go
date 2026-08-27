@@ -503,7 +503,9 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 		t0 := time.Now()
 		f, err := openDirectWrite(path)
 		if err != nil {
-			// Buffered fallback without O_SYNC (O_DIRECT/O_SYNC breaks or stalls on AFS).
+			// Failed O_DIRECT|O_CREAT often leaves an empty file (AFS/tmpfs/VFS);
+			// remove it so the buffered O_EXCL open can succeed.
+			_ = os.Remove(path)
 			f, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o644)
 			if err != nil {
 				return err
@@ -577,6 +579,12 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 			continue
 		}
 
+		// Don't start another chunk if the phase window is essentially over.
+		remainPhase := time.Until(deadline)
+		if remainPhase < 20*time.Millisecond {
+			return nil
+		}
+
 		if file == nil {
 			var err error
 			if doWrite {
@@ -616,7 +624,10 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 					continue
 				}
 			}
+			// Bound blocking AFS/network Write() so work cannot spill far past the phase.
+			_ = file.SetWriteDeadline(time.Now().Add(remainPhase))
 			n, err := file.Write(buf[:chunk])
+			_ = file.SetWriteDeadline(time.Time{}) // clear
 			if n > 0 {
 				fileOff += int64(n)
 				transferred += float64(n)
@@ -624,6 +635,12 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 			}
 			if err != nil {
 				closeFile()
+				if time.Now().After(deadline) || ctx.Err() != nil {
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					return nil
+				}
 				continue
 			}
 			if fileOff >= fileSize {
@@ -667,7 +684,9 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 				continue
 			}
 		}
+		_ = file.SetReadDeadline(time.Now().Add(remainPhase))
 		n, err := file.Read(buf[:chunk])
+		_ = file.SetReadDeadline(time.Time{})
 		if n > 0 {
 			transferred += float64(n)
 			w.Stats.ReadBytes.Add(int64(n))
@@ -685,6 +704,12 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 		}
 		if err != nil {
 			closeFile()
+			if time.Now().After(deadline) || ctx.Err() != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return nil
+			}
 			continue
 		}
 	}
@@ -693,7 +718,8 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 func writeFileDirect(path string, buf []byte, size int64) error {
 	f, err := openDirectWrite(path)
 	if err != nil {
-		f, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		_ = os.Remove(path)
+		f, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o644)
 		if err != nil {
 			return err
 		}
