@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,8 @@ type Orchestrator struct {
 	registry   *Registry
 	metrics    *MetricsStore
 	broadcast  Broadcaster
+	configPath string
+
 	running    bool
 	phase      protocol.Phase
 	percent    int
@@ -39,12 +42,29 @@ type Orchestrator struct {
 	filesCreated int64
 }
 
-func NewOrchestrator(reg *Registry, metrics *MetricsStore, bc Broadcaster) *Orchestrator {
+func NewOrchestrator(reg *Registry, metrics *MetricsStore, bc Broadcaster, configPath string) *Orchestrator {
+	cfg := protocol.DefaultConfig()
+	if configPath != "" {
+		loaded, err := LoadConfigFile(configPath)
+		if err == nil {
+			cfg = loaded
+			log.Printf("loaded config from %s", configPath)
+		} else if os.IsNotExist(err) {
+			if err := SaveConfigFile(configPath, cfg); err != nil {
+				log.Printf("could not write default config to %s: %v", configPath, err)
+			} else {
+				log.Printf("wrote default config to %s", configPath)
+			}
+		} else {
+			log.Printf("config load %s: %v — using defaults", configPath, err)
+		}
+	}
 	return &Orchestrator{
-		cfg:        protocol.DefaultConfig(),
+		cfg:        cfg,
 		registry:   reg,
 		metrics:    metrics,
 		broadcast:  bc,
+		configPath: configPath,
 		phase:      protocol.PhaseIdle,
 		statusText: "Ready",
 	}
@@ -86,6 +106,11 @@ func (o *Orchestrator) SetConfig(cfg protocol.Config) error {
 	o.cfg = cfg
 	o.registry.ReassignPrefixes(cfg.Prefixes)
 	o.broadcast.Broadcast(protocol.Envelope{Type: "config", Config: &cfg})
+	if o.configPath != "" {
+		if err := SaveConfigFile(o.configPath, cfg); err != nil {
+			log.Printf("config save %s: %v", o.configPath, err)
+		}
+	}
 	return nil
 }
 

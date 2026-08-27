@@ -64,7 +64,7 @@ func (u *uiConn) close() {
 	_ = u.conn.Close()
 }
 
-func NewServer(webFS fs.FS) *Server {
+func NewServer(webFS fs.FS, configPath string) *Server {
 	reg := NewRegistry()
 	metrics := NewMetricsStore()
 	s := &Server{
@@ -74,7 +74,7 @@ func NewServer(webFS fs.FS) *Server {
 		clients:  make(map[string]*wsClient),
 		uiSubs:   make(map[*uiConn]struct{}),
 	}
-	s.orch = NewOrchestrator(reg, metrics, s)
+	s.orch = NewOrchestrator(reg, metrics, s, configPath)
 	return s
 }
 
