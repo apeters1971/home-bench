@@ -131,8 +131,9 @@ function estimatedRuntime(cfg, spans) {
         sec += d;
         tips.push(`${PHASE_LABELS[phase] || phase} (measured): ${Math.round(d)}s`);
       } else {
-        sec += 60;
-        tips.push(`${PHASE_LABELS[phase] || phase}: ~60s`);
+        const fallback = phase === "software_cold" ? 600 : 300;
+        sec += fallback;
+        tips.push(`${PHASE_LABELS[phase] || phase}: ~${fallback}s`);
       }
     }
   }

@@ -285,10 +285,10 @@ func (o *Orchestrator) run(ctx context.Context, cfg protocol.Config, nClients in
 			log.Printf("orchestrator: software unpack failed: %v", err)
 			return
 		}
-		if err := o.runSoftwarePhase(ctx, protocol.PhaseSoftwareCold, protocol.SoftwareStartupPhaseTimeout); err != nil {
+		if err := o.runSoftwarePhase(ctx, protocol.PhaseSoftwareCold, protocol.SoftwareStartupColdTimeout); err != nil {
 			return
 		}
-		if err := o.runSoftwarePhase(ctx, protocol.PhaseSoftwareWarm, protocol.SoftwareStartupPhaseTimeout); err != nil {
+		if err := o.runSoftwarePhase(ctx, protocol.PhaseSoftwareWarm, protocol.SoftwareStartupWarmTimeout); err != nil {
 			return
 		}
 	}

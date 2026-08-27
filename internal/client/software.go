@@ -13,7 +13,10 @@ import (
 	"github.com/apeters/homebench/internal/software"
 )
 
-const softwareStartupTimeout = 60 * time.Second
+const (
+	softwareStartupColdTimeout = protocol.SoftwareStartupColdTimeout
+	softwareStartupWarmTimeout = protocol.SoftwareStartupWarmTimeout
+)
 
 func (w *Worker) softwareDir(cmd protocol.PhaseCommand) string {
 	return software.Dir(cmd.Prefix, cmd.TestName)
@@ -42,7 +45,15 @@ func (w *Worker) runSoftwareStartup(ctx context.Context, cmd protocol.PhaseComma
 		return fmt.Errorf("startup_command is empty")
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, softwareStartupTimeout)
+	timeout := time.Duration(cmd.Duration * float64(time.Second))
+	if timeout <= 0 {
+		if cold {
+			timeout = softwareStartupColdTimeout
+		} else {
+			timeout = softwareStartupWarmTimeout
+		}
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	t0 := time.Now()

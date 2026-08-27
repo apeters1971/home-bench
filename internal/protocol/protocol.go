@@ -48,8 +48,9 @@ const (
 	DefaultUntarURL = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.2.tar.xz"
 	// SoftwareUnpackTimeout bounds download+extract / git clone / untar per client.
 	SoftwareUnpackTimeout = 30 * time.Minute
-	// SoftwareStartupPhaseTimeout bounds orchestrator wait for one cold/warm step.
-	SoftwareStartupPhaseTimeout = 90 * time.Second
+	// SoftwareStartupColdTimeout / WarmTimeout bound cold vs warm startup.
+	SoftwareStartupColdTimeout = 600 * time.Second
+	SoftwareStartupWarmTimeout = 300 * time.Second
 	// SoftwareOpTimeout bounds orchestrator wait for git clone or untar.
 	SoftwareOpTimeout = 30 * time.Minute
 	// WSPingInterval is how often ping frames are sent to keep NAT mappings alive.
