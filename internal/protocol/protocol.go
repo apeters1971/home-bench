@@ -33,7 +33,7 @@ const (
 	// MetricsInterval is how often clients push observations.
 	MetricsInterval = time.Second
 	// HistoryRetention is how long the controller keeps metric samples.
-	HistoryRetention = 30 * time.Minute
+	HistoryRetention = 60 * time.Minute
 	// DefaultPhaseStepDuration is the default time spent at each 10% ramp step.
 	DefaultPhaseStepDuration = 30 * time.Second
 	// DefaultPackageURL is unpacked into <prefix>/software when software phases run.

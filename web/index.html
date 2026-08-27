@@ -22,6 +22,10 @@
         <span id="elapsed" class="value mono">00:00:00</span>
       </div>
       <div class="meta-block">
+        <span class="label">Estimated</span>
+        <span id="estimated" class="value mono" title="">00:00:00</span>
+      </div>
+      <div class="meta-block">
         <span class="label">Clients</span>
         <span id="client-count" class="value mono">0</span>
       </div>
@@ -116,7 +120,7 @@
     <section class="panel charts">
       <div class="chart-head">
         <h2>IOPS</h2>
-        <span class="hint">30 minute history · 5s moving average · grey = expected · end label = % of expected reached</span>
+        <span class="hint">60 minute history · 5s moving average · grey = expected · end label = % of expected reached</span>
       </div>
       <div class="chart-frame">
         <canvas id="chart-iops" width="800" height="170"></canvas>

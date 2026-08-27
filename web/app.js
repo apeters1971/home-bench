@@ -69,6 +69,68 @@ function formatElapsed(sec) {
   return `${h}:${m}:${r}`;
 }
 
+function formatPhaseDuration(ms) {
+  const s = Math.max(0, Math.round((ms || 0) / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  if (m < 60) return r ? `${m}m${String(r).padStart(2, "0")}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return rm ? `${h}h${rm}m` : `${h}h`;
+}
+
+function softwareEnabled(cfg) {
+  return !!(String(cfg?.package_url || "").trim() && String(cfg?.startup_command || "").trim());
+}
+
+function spanDurationSec(span) {
+  if (!span?.start || !span?.end) return null;
+  return Math.max(0, (new Date(span.end).getTime() - new Date(span.start).getTime()) / 1000);
+}
+
+// Planned wall time for a full run (ramps are fixed; software unpack varies).
+function estimatedRuntime(cfg, spans) {
+  const step = Math.max(1, Number(cfg?.phase_step_seconds) || 30);
+  // create(10) + delete(10+1) + write(10) + read(10) + r+w(10) + final(10+1)
+  let sec = (10 + 11 + 10 + 10 + 10 + 11) * step;
+  let approx = false;
+  const tips = [`IO ramps: ${62 * step}s (${step}s × 62 steps)`];
+
+  if (softwareEnabled(cfg)) {
+    const unpack = (spans || []).find((s) => s.phase === "software_unpack");
+    const unpackSec = spanDurationSec(unpack);
+    if (unpackSec != null) {
+      sec += unpackSec;
+      tips.push(`Software unpack (measured): ${Math.round(unpackSec)}s`);
+    } else {
+      approx = true;
+      tips.push("Software unpack: variable (download/extract, not included until finished)");
+    }
+    for (const phase of ["software_cold", "software_warm"]) {
+      const sp = (spans || []).find((s) => s.phase === phase);
+      const d = spanDurationSec(sp);
+      if (d != null) {
+        sec += d;
+        tips.push(`${PHASE_LABELS[phase] || phase} (measured): ${Math.round(d)}s`);
+      } else {
+        sec += 60; // startup command timeout budget
+        tips.push(`${PHASE_LABELS[phase] || phase}: ~60s`);
+      }
+    }
+  }
+
+  return { sec, approx, title: tips.join(" · ") };
+}
+
+function updateEstimated(snap) {
+  const el = $("estimated");
+  if (!el) return;
+  const { sec, approx, title } = estimatedRuntime(snap?.config || {}, snap?.phase_spans || []);
+  el.textContent = (approx ? "~" : "") + formatElapsed(sec);
+  el.title = title;
+}
+
 function formatRate(n) {
   if (n >= 1e9) return (n / 1e9).toFixed(2) + " GB/s";
   if (n >= 1e6) return (n / 1e6).toFixed(1) + " MB/s";
@@ -129,6 +191,7 @@ function render(snap) {
   }
 
   $("elapsed").textContent = formatElapsed(snap.elapsed_sec);
+  updateEstimated(snap);
   $("client-count").textContent = String(snap.client_count ?? snap.clients?.length ?? 0);
   $("status-text").textContent = snap.status_text || "Ready";
   $("percent").textContent = snap.running && snap.percent ? `${snap.percent}%` : "";
@@ -474,20 +537,44 @@ function drawHistogram(canvas, edges, hist, color, title) {
 function drawCharts(history) {
   const spans = state.snapshot?.phase_spans || [];
   const cfg = state.snapshot?.config || {};
+  const rawHistory = state.snapshot?.history || history;
+  const bwFiles = estimateBWFileCount(rawHistory, spans);
   const smoothed = smoothHistory(history);
   drawLineChart($("chart-iops"), smoothed, [
     { key: "write_iops", color: "#0f7a5f" },
     { key: "read_iops", color: "#1f5fbf" },
     { key: "delete_iops", color: "#b45309" },
-  ], false, spans, cfg);
+  ], false, spans, cfg, bwFiles);
   drawLineChart($("chart-bw"), smoothed, [
     { key: "write_bps", color: "#0f7a5f" },
     { key: "read_bps", color: "#1f5fbf" },
-  ], true, spans, cfg);
+  ], true, spans, cfg, bwFiles);
 }
 
 function sampleTime(pt) {
   return new Date(pt.timestamp).getTime();
+}
+
+function phaseIdAtTime(spans, t) {
+  for (const span of spans || []) {
+    const start = new Date(span.start).getTime();
+    const end = span.end ? new Date(span.end).getTime() : Date.now();
+    if (t >= start && t <= end) return span.phase;
+  }
+  return "";
+}
+
+// Bandwidth phases create one ledger file per completed write; final delete can
+// only remove those (plus rare leftovers), not the full configured delete rate.
+function estimateBWFileCount(history, spans) {
+  let n = 0;
+  for (const pt of history || []) {
+    const phase = phaseIdAtTime(spans, sampleTime(pt));
+    if (phase === "write_bw" || phase === "read_write") {
+      n += Number(pt.write_iops) || 0;
+    }
+  }
+  return n;
 }
 
 function phaseRampSteps(phase) {
@@ -532,7 +619,6 @@ function expectedRateForPhase(phase, pct, cfg, isBytes) {
     case "create":
       return createRate * f;
     case "delete":
-    case "final_delete":
       return deleteRate * f;
     case "write_bw":
       return (writeBW * f) / BW_FILE_SIZE;
@@ -545,12 +631,32 @@ function expectedRateForPhase(phase, pct, cfg, isBytes) {
   }
 }
 
-function expectedAtTime(t, spans, cfg, isBytes) {
+// Scale the final-delete ramp so its integral equals the BW files available,
+// never exceeding the configured delete rate at each step.
+function finalDeleteExpectedOps(t, span, cfg, bwFiles) {
+  const deleteRate = Number(cfg.file_deletion_rate) || 0;
+  if (bwFiles <= 0 || deleteRate <= 0) return 0;
+  const stepMs = Math.max(1, (Number(cfg.phase_step_seconds) || 30) * 1000);
+  const steps = phaseRampSteps("final_delete");
+  const start = new Date(span.start).getTime();
+  const idx = Math.min(steps.length - 1, Math.max(0, Math.floor((t - start) / stepMs)));
+  const weights = steps.map((p) => p / 100);
+  const totalW = weights.reduce((a, b) => a + b, 0) || 1;
+  const stepSec = stepMs / 1000;
+  const configured = deleteRate * weights[idx];
+  const share = (bwFiles * weights[idx]) / totalW / stepSec;
+  return Math.min(configured, share);
+}
+
+function expectedAtTime(t, spans, cfg, isBytes, bwFiles) {
   const stepMs = Math.max(1, (Number(cfg.phase_step_seconds) || 30) * 1000);
   for (const span of spans || []) {
     const start = new Date(span.start).getTime();
     const end = span.end ? new Date(span.end).getTime() : Date.now();
     if (!(t >= start && t <= end)) continue;
+    if (span.phase === "final_delete") {
+      return isBytes ? 0 : finalDeleteExpectedOps(t, span, cfg, bwFiles || 0);
+    }
     const steps = phaseRampSteps(span.phase);
     if (!steps.length) return 0;
     const idx = Math.min(steps.length - 1, Math.max(0, Math.floor((t - start) / stepMs)));
@@ -590,7 +696,7 @@ function actualForPhase(phase, pt, isBytes) {
   }
 }
 
-function phaseAttainment(span, history, cfg, isBytes) {
+function phaseAttainment(span, history, cfg, isBytes, bwFiles) {
   if (!span?.end || !history?.length) return null;
   if (!phaseRampSteps(span.phase).length) return null;
   const start = new Date(span.start).getTime();
@@ -600,7 +706,7 @@ function phaseAttainment(span, history, cfg, isBytes) {
   for (const pt of history) {
     const t = sampleTime(pt);
     if (t < start || t > end) continue;
-    const e = expectedAtTime(t, [span], cfg, isBytes);
+    const e = expectedAtTime(t, [span], cfg, isBytes, bwFiles);
     if (e <= 0) continue;
     act += actualForPhase(span.phase, pt, isBytes);
     exp += e;
@@ -609,7 +715,7 @@ function phaseAttainment(span, history, cfg, isBytes) {
   return (100 * act) / exp;
 }
 
-function drawPhaseBands(ctx, spans, tMin, tMax, pad, plotW, plotH, history, cfg, isBytes) {
+function drawPhaseBands(ctx, spans, tMin, tMax, pad, plotW, plotH, history, cfg, isBytes, bwFiles) {
   if (!spans?.length || !(tMax > tMin)) return;
   const labelY = 12;
   const barTop = pad.t;
@@ -645,16 +751,25 @@ function drawPhaseBands(ctx, spans, tMin, tMax, pad, plotW, plotH, history, cfg,
       ctx.fillText(style.label, lx, labelY);
     }
 
-    // When the phase has finished, show how much of expected rate was reached.
+    // When the phase has finished, show attainment % (IO phases) or duration (software).
     if (span.end && w >= 28) {
-      const att = phaseAttainment(span, history, cfg, isBytes);
+      const att = phaseAttainment(span, history, cfg, isBytes, bwFiles);
+      let endLabel = null;
       if (att != null) {
+        endLabel = `${Math.round(att)}%`;
+      } else if (
+        span.phase === "software_unpack" ||
+        span.phase === "software_cold" ||
+        span.phase === "software_warm"
+      ) {
+        endLabel = formatPhaseDuration(end - start);
+      }
+      if (endLabel) {
         ctx.fillStyle = EXPECTED_COLOR;
         ctx.font = "600 10px IBM Plex Mono, monospace";
         ctx.textAlign = "right";
         ctx.textBaseline = "alphabetic";
-        const label = `${Math.round(att)}%`;
-        ctx.fillText(label, Math.min(x1 - 3, pad.l + plotW - 2), pad.t + plotH - 4);
+        ctx.fillText(endLabel, Math.min(x1 - 3, pad.l + plotW - 2), pad.t + plotH - 4);
       }
     }
   }
@@ -776,9 +891,10 @@ function showTooltip(canvas, idx, localX, localY) {
   tip.style.top = `${Math.max(4, top)}px`;
 }
 
-function drawLineChart(canvas, history, series, isBytes, spans, cfg) {
+function drawLineChart(canvas, history, series, isBytes, spans, cfg, bwFiles) {
   bindChartHover(canvas);
   cfg = cfg || {};
+  bwFiles = bwFiles || 0;
 
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
@@ -828,7 +944,7 @@ function drawLineChart(canvas, history, series, isBytes, spans, cfg) {
   }
   if (!(tMax > tMin)) tMax = tMin + 1;
 
-  const expected = history.map((pt) => expectedAtTime(sampleTime(pt), spans, cfg, isBytes));
+  const expected = history.map((pt) => expectedAtTime(sampleTime(pt), spans, cfg, isBytes, bwFiles));
 
   let maxY = 1;
   for (const pt of history) {
@@ -839,7 +955,7 @@ function drawLineChart(canvas, history, series, isBytes, spans, cfg) {
 
   canvas._chart = { history, series, isBytes, spans, expected, pad, tMin, tMax, maxY, plotW, plotH };
 
-  drawPhaseBands(ctx, spans, tMin, tMax, pad, plotW, plotH, history, cfg, isBytes);
+  drawPhaseBands(ctx, spans, tMin, tMax, pad, plotW, plotH, history, cfg, isBytes, bwFiles);
 
   ctx.strokeStyle = "rgba(20,32,28,0.08)";
   ctx.lineWidth = 1;

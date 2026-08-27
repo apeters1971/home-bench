@@ -29,6 +29,7 @@ type Orchestrator struct {
 	phase      protocol.Phase
 	percent    int
 	startedAt  *time.Time
+	elapsedSec float64 // frozen when the run ends (Completed / Stopped)
 	statusText string
 	cancel     context.CancelFunc
 	phaseSpans []protocol.PhaseSpan
@@ -90,8 +91,8 @@ func (o *Orchestrator) SetConfig(cfg protocol.Config) error {
 func (o *Orchestrator) Snapshot() protocol.UIState {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
-	var elapsed float64
-	if o.startedAt != nil {
+	elapsed := o.elapsedSec
+	if o.running && o.startedAt != nil {
 		elapsed = time.Since(*o.startedAt).Seconds()
 	}
 	spans := make([]protocol.PhaseSpan, len(o.phaseSpans))
@@ -139,6 +140,7 @@ func (o *Orchestrator) Start() error {
 	o.running = true
 	now := time.Now()
 	o.startedAt = &now
+	o.elapsedSec = 0
 	o.phase = protocol.PhaseCreate
 	o.percent = 0
 	o.filesCreated = 0
@@ -166,6 +168,9 @@ func (o *Orchestrator) Stop() {
 	o.metrics.Freeze()
 	o.mu.Lock()
 	o.closePhaseSpanLocked(time.Now())
+	if o.startedAt != nil {
+		o.elapsedSec = time.Since(*o.startedAt).Seconds()
+	}
 	o.running = false
 	o.phase = protocol.PhaseStopped
 	o.percent = 0
@@ -208,6 +213,9 @@ func (o *Orchestrator) finish(text string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.closePhaseSpanLocked(time.Now())
+	if o.startedAt != nil {
+		o.elapsedSec = time.Since(*o.startedAt).Seconds()
+	}
 	o.running = false
 	o.phase = protocol.PhaseIdle
 	o.percent = 0
