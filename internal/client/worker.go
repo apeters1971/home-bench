@@ -503,7 +503,8 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 		t0 := time.Now()
 		f, err := openDirectWrite(path)
 		if err != nil {
-			f, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL|os.O_SYNC, 0o644)
+			// Buffered fallback without O_SYNC (O_DIRECT/O_SYNC breaks or stalls on AFS).
+			f, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o644)
 			if err != nil {
 				return err
 			}
@@ -692,7 +693,7 @@ func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, do
 func writeFileDirect(path string, buf []byte, size int64) error {
 	f, err := openDirectWrite(path)
 	if err != nil {
-		f, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_SYNC, 0o644)
+		f, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 		if err != nil {
 			return err
 		}
