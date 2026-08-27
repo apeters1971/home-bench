@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/apeters/homebench/internal/software"
 )
 
 // FilePath builds prefix/testname/hostname/shard1/shard2/fileindex
@@ -26,7 +28,7 @@ func HostRoot(prefix, testName, hostname string) string {
 
 // SoftwareDir is where package/git/tar ops run: <prefix>/<testName>/software
 func SoftwareDir(prefix, testName string) string {
-	return filepath.Join(prefix, testName, "software")
+	return software.Dir(prefix, testName)
 }
 
 func EnsureParent(path string) error {

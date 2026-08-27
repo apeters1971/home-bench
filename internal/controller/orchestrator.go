@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/apeters/homebench/internal/protocol"
+	"github.com/apeters/homebench/internal/software"
 )
 
 // Broadcaster sends commands to all connected clients.
@@ -248,9 +249,11 @@ func (o *Orchestrator) run(ctx context.Context, cfg protocol.Config, nClients in
 	log.Printf("orchestrator: start with %d clients step=%s create=%.1f/s delete=%.1f/s write=%.0f B/s read=%.0f B/s software=%v git=%v untar=%v",
 		nClients, step, createRate, deleteRate, writeBW, readBW, cfg.SoftwareEnabled(), cfg.GitCloneEnabled(), cfg.UntarEnabled())
 
-	// Optional: unpack package into <prefix>/<test>/software, then cold + warm startup.
+	// Optional: controller unpacks package once into each <prefix>/<test>/software,
+	// then clients run cold + warm startup from that shared tree.
 	if cfg.SoftwareEnabled() {
-		if err := o.runSoftwarePhase(ctx, protocol.PhaseSoftwareUnpack, protocol.SoftwareUnpackTimeout); err != nil {
+		if err := o.runControllerUnpack(ctx); err != nil {
+			log.Printf("orchestrator: software unpack failed: %v", err)
 			return
 		}
 		if err := o.runSoftwarePhase(ctx, protocol.PhaseSoftwareCold, protocol.SoftwareStartupPhaseTimeout); err != nil {
@@ -306,6 +309,21 @@ func (o *Orchestrator) run(ctx context.Context, cfg protocol.Config, nClients in
 		return
 	}
 	_ = o.sendAndWait(ctx, protocol.PhaseFinalDelete, 100, deleteRate, 0, 0, step)
+}
+
+func (o *Orchestrator) runControllerUnpack(ctx context.Context) error {
+	cfg := o.Config()
+	o.setPhase(protocol.PhaseSoftwareUnpack, 100, protocol.PhaseLabel(protocol.PhaseSoftwareUnpack))
+	log.Printf("orchestrator: controller unpacking %s into %d prefix(es)", cfg.PackageURL, len(cfg.Prefixes))
+
+	ctx, cancel := context.WithTimeout(ctx, protocol.SoftwareUnpackTimeout)
+	defer cancel()
+
+	if err := software.UnpackToPrefixes(ctx, cfg.PackageURL, cfg.Prefixes, cfg.TestName); err != nil {
+		return err
+	}
+	log.Printf("orchestrator: software unpack complete")
+	return nil
 }
 
 func (o *Orchestrator) runSoftwarePhase(ctx context.Context, phase protocol.Phase, timeout time.Duration) error {

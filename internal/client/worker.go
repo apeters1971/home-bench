@@ -240,8 +240,6 @@ func NewWorker(hostname, prefix string, ledger *FileLedger, stats *Stats) *Worke
 
 func (w *Worker) Run(ctx context.Context, cmd protocol.PhaseCommand) error {
 	switch cmd.Phase {
-	case protocol.PhaseSoftwareUnpack:
-		return w.runSoftwareUnpack(ctx, cmd)
 	case protocol.PhaseSoftwareCold:
 		return w.runSoftwareStartup(ctx, cmd, true)
 	case protocol.PhaseSoftwareWarm:
