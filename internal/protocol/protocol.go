@@ -124,6 +124,7 @@ type ClientInfo struct {
 	LastSeen time.Time `json:"last_seen"`
 	Status   string    `json:"status"`
 	Phase    Phase     `json:"phase"`
+	Selected bool      `json:"selected"` // participates in the next/current run
 }
 
 // MetricSample is one second of observed IO from a client.
@@ -230,9 +231,11 @@ type UIState struct {
 	LatencyEdgesUs      []float64          `json:"latency_edges_us"`
 	PhaseSpans          []PhaseSpan        `json:"phase_spans"`
 	PhaseOrder          []Phase            `json:"phase_order"`
-	StatusText          string             `json:"status_text"`
-	ClientCount         int                `json:"client_count"`
-	ControllerHostname  string             `json:"controller_hostname"`
+	StatusText         string             `json:"status_text"`
+	ClientCount        int                `json:"client_count"`
+	ParticipantCount   int                `json:"participant_count"`
+	SelectedClientIDs  []string           `json:"selected_client_ids"`
+	ControllerHostname string             `json:"controller_hostname"`
 }
 
 // PhaseOrder is the base sequence of a full run (without optional software phases).

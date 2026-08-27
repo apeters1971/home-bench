@@ -30,6 +30,13 @@ type Orchestrator struct {
 	configPath string
 	hostname   string
 
+	// selectedIDs is the UI selection for the next run.
+	selectedIDs map[string]struct{}
+	// autoSelectNew adds registrants to selectedIDs while idle (off after Start or a partial selection).
+	autoSelectNew bool
+	// runClientIDs is frozen at Start; commands/stop go only to these clients.
+	runClientIDs []string
+
 	running    bool
 	phase      protocol.Phase
 	percent    int
@@ -62,14 +69,16 @@ func NewOrchestrator(reg *Registry, metrics *MetricsStore, bc Broadcaster, confi
 	}
 	hostname, _ := os.Hostname()
 	return &Orchestrator{
-		cfg:        cfg,
-		registry:   reg,
-		metrics:    metrics,
-		broadcast:  bc,
-		configPath: configPath,
-		hostname:   hostname,
-		phase:      protocol.PhaseIdle,
-		statusText: "Ready",
+		cfg:         cfg,
+		registry:    reg,
+		metrics:     metrics,
+		broadcast:   bc,
+		configPath:  configPath,
+		hostname:    hostname,
+		selectedIDs:   make(map[string]struct{}),
+		autoSelectNew: true,
+		phase:         protocol.PhaseIdle,
+		statusText:    "Ready",
 	}
 }
 
@@ -126,9 +135,37 @@ func (o *Orchestrator) Snapshot() protocol.UIState {
 	}
 	spans := make([]protocol.PhaseSpan, len(o.phaseSpans))
 	copy(spans, o.phaseSpans)
+
+	clients := o.registry.List()
+	selectedIDs := make([]string, 0, len(o.selectedIDs))
+	participantCount := 0
+	if o.running && len(o.runClientIDs) > 0 {
+		runSet := make(map[string]struct{}, len(o.runClientIDs))
+		for _, id := range o.runClientIDs {
+			runSet[id] = struct{}{}
+		}
+		for i := range clients {
+			_, sel := runSet[clients[i].ID]
+			clients[i].Selected = sel
+			if sel {
+				participantCount++
+				selectedIDs = append(selectedIDs, clients[i].ID)
+			}
+		}
+	} else {
+		for i := range clients {
+			_, sel := o.selectedIDs[clients[i].ID]
+			clients[i].Selected = sel
+			if sel {
+				participantCount++
+				selectedIDs = append(selectedIDs, clients[i].ID)
+			}
+		}
+	}
+
 	return protocol.UIState{
 		Config:             o.cfg,
-		Clients:            o.registry.List(),
+		Clients:            clients,
 		Running:            o.running,
 		Phase:              o.phase,
 		Percent:            o.percent,
@@ -140,9 +177,97 @@ func (o *Orchestrator) Snapshot() protocol.UIState {
 		PhaseSpans:         spans,
 		PhaseOrder:         protocol.EffectivePhaseOrder(o.cfg),
 		StatusText:         o.statusText,
-		ClientCount:        o.registry.Count(),
+		ClientCount:        len(clients),
+		ParticipantCount:   participantCount,
+		SelectedClientIDs:  selectedIDs,
 		ControllerHostname: o.hostname,
 	}
+}
+
+// OnClientRegistered may select a newly connected client for the next run.
+// Never while a run is active, and not after Start / a partial lock has disabled auto-select.
+func (o *Orchestrator) OnClientRegistered(id string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.running || !o.autoSelectNew {
+		return
+	}
+	if o.selectedIDs == nil {
+		o.selectedIDs = make(map[string]struct{})
+	}
+	o.selectedIDs[id] = struct{}{}
+}
+
+// OnClientRemoved drops a client from the selection set.
+func (o *Orchestrator) OnClientRemoved(id string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	delete(o.selectedIDs, id)
+}
+
+// SetSelectedClients replaces the participant selection (idle only).
+func (o *Orchestrator) SetSelectedClients(ids []string) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.running {
+		return fmt.Errorf("cannot change participants while running")
+	}
+	known := make(map[string]struct{})
+	for _, id := range o.registry.IDs() {
+		known[id] = struct{}{}
+	}
+	next := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := known[id]; !ok {
+			continue
+		}
+		next[id] = struct{}{}
+	}
+	o.selectedIDs = next
+	// Only keep auto-including newcomers when every currently known client is selected.
+	o.autoSelectNew = len(next) > 0 && len(next) == len(known)
+	return nil
+}
+
+func (o *Orchestrator) IsParticipant(id string) bool {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	if !o.running {
+		return false
+	}
+	for _, x := range o.runClientIDs {
+		if x == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (o *Orchestrator) broadcastRun(env protocol.Envelope) {
+	o.mu.RLock()
+	ids := append([]string(nil), o.runClientIDs...)
+	o.mu.RUnlock()
+	for _, id := range ids {
+		o.broadcast.SendTo(id, env)
+	}
+}
+
+func (o *Orchestrator) connectedSelectedLocked() []string {
+	known := make(map[string]struct{})
+	for _, id := range o.registry.IDs() {
+		known[id] = struct{}{}
+	}
+	out := make([]string, 0, len(o.selectedIDs))
+	for id := range o.selectedIDs {
+		if _, ok := known[id]; ok {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 func (o *Orchestrator) UpdateClientFiles(n int64) {
@@ -159,15 +284,22 @@ func (o *Orchestrator) Start() error {
 		o.mu.Unlock()
 		return fmt.Errorf("already running")
 	}
-	n := o.registry.Count()
-	if n == 0 {
+	if o.registry.Count() == 0 {
 		o.mu.Unlock()
 		return fmt.Errorf("no clients registered")
 	}
+	participants := o.connectedSelectedLocked()
+	if len(participants) == 0 {
+		o.mu.Unlock()
+		return fmt.Errorf("no clients selected")
+	}
+	n := len(participants)
 	cfg := o.cfg
 	ctx, cancel := context.WithCancel(context.Background())
 	o.cancel = cancel
 	o.running = true
+	o.runClientIDs = participants
+	o.autoSelectNew = false // lock set: newcomers stay unselected until explicitly chosen
 	now := time.Now()
 	o.startedAt = &now
 	o.elapsedSec = 0
@@ -175,38 +307,42 @@ func (o *Orchestrator) Start() error {
 	o.percent = 0
 	o.filesCreated = 0
 	o.phaseSpans = nil
-	o.statusText = "Starting create phase"
+	o.statusText = fmt.Sprintf("Starting create phase (%d clients)", n)
 	o.mu.Unlock()
 
 	o.metrics.Begin()
+	log.Printf("orchestrator: starting with %d selected of %d registered", n, o.registry.Count())
 	go o.run(ctx, cfg, n)
 	return nil
 }
 
 func (o *Orchestrator) Stop() {
 	o.mu.Lock()
-	cancel := o.cancel
-	o.mu.Unlock()
-	if cancel != nil {
-		cancel()
+	if !o.running {
+		o.mu.Unlock()
+		return
 	}
-	cleanup := true
-	o.broadcast.Broadcast(protocol.Envelope{
-		Type: "stop",
-		Stop: &protocol.StopMsg{Cleanup: cleanup},
-	})
-	o.metrics.Freeze()
-	o.mu.Lock()
+	cancel := o.cancel
+	o.cancel = nil
+	o.phase = protocol.PhaseStopped
+	o.percent = 0
+	o.statusText = "Stopped — clients cleaning up"
 	o.closePhaseSpanLocked(time.Now())
 	if o.startedAt != nil {
 		o.elapsedSec = time.Since(*o.startedAt).Seconds()
 	}
-	o.running = false
-	o.phase = protocol.PhaseStopped
-	o.percent = 0
-	o.statusText = "Stopped — clients cleaning up"
-	o.cancel = nil
+	// Keep running=true and runClientIDs until finish() so participant
+	// selection stays locked through client cleanup.
 	o.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	o.broadcastRun(protocol.Envelope{
+		Type: "stop",
+		Stop: &protocol.StopMsg{Cleanup: true},
+	})
+	o.metrics.Freeze()
 }
 
 func (o *Orchestrator) IsRunning() bool {
@@ -247,6 +383,7 @@ func (o *Orchestrator) finish(text string) {
 		o.elapsedSec = time.Since(*o.startedAt).Seconds()
 	}
 	o.running = false
+	o.runClientIDs = nil
 	o.phase = protocol.PhaseIdle
 	o.percent = 0
 	o.statusText = text
@@ -390,13 +527,13 @@ func (o *Orchestrator) runSoftwarePhase(ctx context.Context, phase protocol.Phas
 		GitCloneURL:    cfg.GitCloneURL,
 		UntarURL:       cfg.UntarURL,
 	}
-	o.broadcast.Broadcast(protocol.Envelope{Type: "command", Command: cmd})
+	o.broadcastRun(protocol.Envelope{Type: "command", Command: cmd})
 	log.Printf("orchestrator: phase=%s timeout=%s", phase, timeout)
 
 	return o.waitClientsIdle(ctx, timeout)
 }
 
-// waitClientsIdle waits until every registered client reports idle after starting work,
+// waitClientsIdle waits until every run participant reports idle after starting work,
 // or until timeout. Used for one-shot software phases that finish early.
 func (o *Orchestrator) waitClientsIdle(ctx context.Context, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
@@ -405,6 +542,13 @@ func (o *Orchestrator) waitClientsIdle(ctx context.Context, timeout time.Duratio
 
 	sawRunning := false
 	grace := time.Now().Add(1500 * time.Millisecond)
+
+	o.mu.RLock()
+	want := make(map[string]struct{}, len(o.runClientIDs))
+	for _, id := range o.runClientIDs {
+		want[id] = struct{}{}
+	}
+	o.mu.RUnlock()
 
 	for {
 		select {
@@ -416,12 +560,14 @@ func (o *Orchestrator) waitClientsIdle(ctx context.Context, timeout time.Duratio
 				return nil
 			}
 			clients := o.registry.List()
-			if len(clients) == 0 {
-				continue
-			}
 			allIdle := true
 			anyRunning := false
+			seenWanted := 0
 			for _, c := range clients {
+				if _, ok := want[c.ID]; !ok {
+					continue
+				}
+				seenWanted++
 				switch c.Status {
 				case "running":
 					anyRunning = true
@@ -432,6 +578,13 @@ func (o *Orchestrator) waitClientsIdle(ctx context.Context, timeout time.Duratio
 				default:
 					allIdle = false
 				}
+			}
+			// Disconnected participants are treated as done.
+			if seenWanted == 0 && len(want) > 0 && time.Now().After(grace) {
+				return nil
+			}
+			if seenWanted == 0 {
+				continue
 			}
 			if sawRunning && allIdle && !anyRunning {
 				return nil
@@ -478,7 +631,7 @@ func (o *Orchestrator) sendAndWait(ctx context.Context, phase protocol.Phase, pc
 		TestName: cfg.TestName,
 		FileSize: fileSize,
 	}
-	o.broadcast.Broadcast(protocol.Envelope{Type: "command", Command: cmd})
+	o.broadcastRun(protocol.Envelope{Type: "command", Command: cmd})
 	log.Printf("orchestrator: phase=%s percent=%d rate=%.2f read_rate=%.2f duration=%s", phase, pct, rate, readRate, step)
 
 	timer := time.NewTimer(step)

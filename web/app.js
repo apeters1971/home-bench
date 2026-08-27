@@ -222,7 +222,12 @@ function render(snap) {
 
   $("elapsed").textContent = formatElapsed(snap.elapsed_sec);
   updateEstimated(snap);
-  $("client-count").textContent = String(snap.client_count ?? snap.clients?.length ?? 0);
+  const totalClients = snap.client_count ?? snap.clients?.length ?? 0;
+  const participants = snap.participant_count ?? 0;
+  $("client-count").textContent =
+    totalClients > 0 && participants !== totalClients
+      ? `${participants}/${totalClients}`
+      : String(totalClients);
   $("status-text").textContent = snap.status_text || "Ready";
   $("percent").textContent = snap.running && snap.percent ? `${snap.percent}%` : "";
   const hostEl = $("controller-host");
@@ -232,8 +237,9 @@ function render(snap) {
     hostEl.title = host ? `Controller node: ${host}` : "";
   }
 
-  $("btn-start").disabled = !!snap.running;
+  $("btn-start").disabled = !!snap.running || participants < 1;
   $("btn-stop").disabled = !snap.running;
+  updateParticipantControls(!!snap.running);
 
   document.querySelectorAll(".phase-btn").forEach((btn) => {
     btn.classList.toggle("active", snap.running && btn.dataset.phase === snap.phase);
@@ -254,16 +260,41 @@ function render(snap) {
   }
 }
 
+function updateParticipantControls(locked) {
+  const disabled = !!locked;
+  for (const id of ["select-all-clients", "select-n-count", "btn-select-n", "btn-select-none"]) {
+    const el = $(id);
+    if (el) el.disabled = disabled;
+  }
+  document.querySelectorAll("#client-body input[type=checkbox]").forEach((cb) => {
+    cb.disabled = disabled;
+  });
+  const tools = document.querySelector(".clients-tools");
+  if (tools) tools.classList.toggle("locked", disabled);
+  const wrap = document.querySelector(".clients .table-wrap");
+  if (wrap) wrap.classList.toggle("selection-locked", disabled);
+}
+
 function renderClients(clients) {
   const body = $("client-body");
   const meta = $("client-list-meta");
+  const running = !!state.snapshot?.running;
   const n = clients.length;
-  meta.textContent = n <= 10 ? `${n} client${n === 1 ? "" : "s"}` : `${n} clients · scroll for more`;
+  const selected = clients.filter((c) => c.selected).length;
+  meta.textContent =
+    n === 0
+      ? "0 clients"
+      : `${selected} of ${n} selected${n > 10 ? " · scroll for more" : ""}`;
 
-  const next = clients.map((c) =>
-    [c.hostname, c.prefix, c.status, PHASE_LABELS[c.phase] || c.phase || ""].join("\0")
-  ).join("\n");
-  if (body.dataset.sig === next) return;
+  const next = clients
+    .map((c) =>
+      [c.id, c.hostname, c.prefix, c.status, PHASE_LABELS[c.phase] || c.phase || "", c.selected ? "1" : "0"].join("\0")
+    )
+    .join("\n");
+  if (body.dataset.sig === next) {
+    updateParticipantControls(running);
+    return;
+  }
   body.dataset.sig = next;
 
   // Preserve scroll position across live updates.
@@ -274,6 +305,7 @@ function renderClients(clients) {
   for (const c of clients) {
     const tr = document.createElement("tr");
     tr.innerHTML = `
+      <td class="col-check"><input type="checkbox" data-client-id="${escapeHtml(c.id)}" ${c.selected ? "checked" : ""} ${running ? "disabled" : ""} /></td>
       <td>${escapeHtml(c.hostname)}</td>
       <td class="mono">${escapeHtml(c.prefix)}</td>
       <td>${escapeHtml(c.status)}</td>
@@ -281,6 +313,81 @@ function renderClients(clients) {
     body.appendChild(tr);
   }
   if (wrap) wrap.scrollTop = scrollTop;
+
+  const all = $("select-all-clients");
+  if (all) {
+    all.checked = n > 0 && selected === n;
+    all.indeterminate = selected > 0 && selected < n;
+  }
+  updateParticipantControls(running);
+}
+
+async function setParticipants(ids) {
+  const res = await fetch("/api/participants", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ client_ids: ids }),
+  });
+  if (!res.ok) {
+    alert(await res.text());
+    return;
+  }
+  const snap = await res.json();
+  if (snap) render(snap);
+}
+
+function selectedClientIDsFromDOM() {
+  return Array.from(document.querySelectorAll("#client-body input[type=checkbox]:checked"))
+    .map((cb) => cb.dataset.clientId)
+    .filter(Boolean);
+}
+
+function bindParticipantControls() {
+  const body = $("client-body");
+  if (body && !body.dataset.participantBound) {
+    body.dataset.participantBound = "1";
+    body.addEventListener("change", (e) => {
+      const t = e.target;
+      if (!(t instanceof HTMLInputElement) || t.type !== "checkbox") return;
+      if (state.snapshot?.running) return;
+      setParticipants(selectedClientIDsFromDOM());
+    });
+  }
+
+  const all = $("select-all-clients");
+  if (all && !all.dataset.bound) {
+    all.dataset.bound = "1";
+    all.addEventListener("change", () => {
+      if (state.snapshot?.running) return;
+      const clients = state.snapshot?.clients || [];
+      const ids = all.checked ? clients.map((c) => c.id).filter(Boolean) : [];
+      setParticipants(ids);
+    });
+  }
+
+  const none = $("btn-select-none");
+  if (none && !none.dataset.bound) {
+    none.dataset.bound = "1";
+    none.addEventListener("click", () => {
+      if (state.snapshot?.running) return;
+      setParticipants([]);
+    });
+  }
+
+  const btnN = $("btn-select-n");
+  if (btnN && !btnN.dataset.bound) {
+    btnN.dataset.bound = "1";
+    btnN.addEventListener("click", () => {
+      if (state.snapshot?.running) return;
+      const n = Math.max(0, Math.floor(Number($("select-n-count")?.value) || 0));
+      const clients = [...(state.snapshot?.clients || [])].sort((a, b) => {
+        const h = String(a.hostname || "").localeCompare(String(b.hostname || ""));
+        if (h !== 0) return h;
+        return String(a.id || "").localeCompare(String(b.id || ""));
+      });
+      setParticipants(clients.slice(0, n).map((c) => c.id).filter(Boolean));
+    });
+  }
 }
 
 function escapeHtml(s) {
@@ -1512,6 +1619,11 @@ function downloadReport() {
 }
 
 async function startTest() {
+  const n = state.snapshot?.participant_count ?? 0;
+  if (n < 1) {
+    alert("Select at least one client before starting.");
+    return;
+  }
   const res = await fetch("/api/start", { method: "POST" });
   if (!res.ok) alert(await res.text());
 }
@@ -1537,6 +1649,7 @@ async function bootstrap() {
   $("config-form").addEventListener("submit", saveConfig);
   $("btn-start").addEventListener("click", startTest);
   $("btn-stop").addEventListener("click", stopTest);
+  bindParticipantControls();
   $("btn-download-json").addEventListener("click", downloadJSON);
   $("btn-download-report").addEventListener("click", downloadReport);
   window.addEventListener("resize", () => {

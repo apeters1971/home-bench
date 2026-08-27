@@ -368,6 +368,54 @@ input:focus, textarea:focus {
   gap: 12px;
 }
 
+.clients-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  margin-top: 10px;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.clients-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.clients-tool input[type="number"] {
+  width: 4.2rem;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: 500 0.82rem var(--mono);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.clients-tools.locked,
+.clients .table-wrap.selection-locked {
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+th.col-check,
+td.col-check {
+  width: 2rem;
+  text-align: center;
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+td.col-check input {
+  width: 1rem;
+  height: 1rem;
+  cursor: pointer;
+}
+
 .table-wrap {
   overflow: auto;
   margin-top: 12px;

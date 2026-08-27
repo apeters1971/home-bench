@@ -115,6 +115,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/state", s.handleState)
 	mux.HandleFunc("/api/config", s.handleConfig)
+	mux.HandleFunc("/api/participants", s.handleParticipants)
 	mux.HandleFunc("/api/start", s.handleStart)
 	mux.HandleFunc("/api/stop", s.handleStop)
 	mux.HandleFunc("/ws/client", s.handleClientWS)
@@ -137,6 +138,7 @@ func (s *Server) StartBackground() {
 					delete(s.clients, id)
 				}
 				s.mu.Unlock()
+				s.orch.OnClientRemoved(id)
 				log.Printf("pruned stale client %s", id)
 			}
 			s.requestUI()
@@ -163,6 +165,27 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, cfg)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleParticipants(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPut, http.MethodPost:
+		var body struct {
+			ClientIDs []string `json:"client_ids"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := s.orch.SetSelectedClients(body.ClientIDs); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		s.requestUI()
+		writeJSON(w, s.orch.Snapshot())
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -207,12 +230,17 @@ func (s *Server) handleClientWS(w http.ResponseWriter, r *http.Request) {
 		// A reconnect with the same ID must not be wiped by the old handler.
 		if clientID != "" {
 			s.mu.Lock()
+			removed := false
 			if cur, ok := s.clients[clientID]; ok && cur.conn == conn {
 				delete(s.clients, clientID)
 				s.registry.Remove(clientID)
+				removed = true
 				log.Printf("client disconnected: %s", clientID)
 			}
 			s.mu.Unlock()
+			if removed {
+				s.orch.OnClientRemoved(clientID)
+			}
 			s.requestUI()
 		}
 		_ = conn.Close()
@@ -281,6 +309,7 @@ func (s *Server) handleClientWS(w http.ResponseWriter, r *http.Request) {
 			cfg := s.orch.Config()
 			prefix := protocol.SelectPrefix(env.Register.Hostname, cfg.Prefixes)
 			info := s.registry.Upsert(id, env.Register.Hostname, prefix)
+			s.orch.OnClientRegistered(id)
 			wc = &wsClient{id: id, conn: conn}
 			s.mu.Lock()
 			// Close any superseded connection for this ID.
@@ -303,7 +332,7 @@ func (s *Server) handleClientWS(w http.ResponseWriter, r *http.Request) {
 			}
 			s.registry.Touch(env.Metrics.ClientID)
 			// Heartbeats keep the session alive; only record into plots while running.
-			if s.orch.IsRunning() {
+			if s.orch.IsRunning() && s.orch.IsParticipant(env.Metrics.ClientID) {
 				s.metrics.Add(*env.Metrics)
 				s.requestUI()
 			}

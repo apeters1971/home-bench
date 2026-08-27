@@ -100,10 +100,23 @@
           <h2>Registered clients</h2>
           <span id="client-list-meta" class="hint">0 shown</span>
         </div>
+        <div class="clients-tools">
+          <label class="clients-tool">
+            <input type="checkbox" id="select-all-clients" />
+            Select all
+          </label>
+          <label class="clients-tool">
+            Select
+            <input id="select-n-count" type="number" min="0" step="1" value="10" />
+            <button type="button" id="btn-select-n" class="btn secondary btn-tiny">Apply</button>
+          </label>
+          <button type="button" id="btn-select-none" class="btn secondary btn-tiny">Clear</button>
+        </div>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
+                <th class="col-check"></th>
                 <th>Hostname</th>
                 <th>Prefix</th>
                 <th>Status</th>
