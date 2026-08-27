@@ -16,9 +16,10 @@ func LatencyBucketCount() int {
 
 // LatencyHistogram is a fixed-bucket distribution of operation latencies.
 type LatencyHistogram struct {
-	Counts []uint64 `json:"counts"` // len = LatencyBucketCount()
-	Total  uint64   `json:"total"`
-	SumUs  float64  `json:"sum_us"`
+	Counts   []uint64 `json:"counts"` // len = LatencyBucketCount()
+	Total    uint64   `json:"total"`  // successful observes only
+	SumUs    float64  `json:"sum_us"`
+	Failures uint64   `json:"failures"` // failed ops (not in Counts/Total/SumUs)
 }
 
 // NewLatencyHistogram returns an empty histogram with allocated buckets.
@@ -26,7 +27,7 @@ func NewLatencyHistogram() LatencyHistogram {
 	return LatencyHistogram{Counts: make([]uint64, LatencyBucketCount())}
 }
 
-// ObserveUs adds one sample (microseconds) into the histogram.
+// ObserveUs adds one successful sample (microseconds) into the histogram.
 func (h *LatencyHistogram) ObserveUs(us float64) {
 	if h.Counts == nil || len(h.Counts) != LatencyBucketCount() {
 		h.Counts = make([]uint64, LatencyBucketCount())
@@ -45,12 +46,20 @@ func (h *LatencyHistogram) ObserveUs(us float64) {
 	h.Counts[len(LatencyBucketEdgesUs)]++
 }
 
+// ObserveFailure records a failed operation (excluded from latency stats).
+func (h *LatencyHistogram) ObserveFailure() {
+	h.Failures++
+}
+
 // Merge adds counts from another histogram (deltas or snapshots).
 func (h *LatencyHistogram) Merge(other LatencyHistogram) {
 	if h.Counts == nil || len(h.Counts) != LatencyBucketCount() {
 		h.Counts = make([]uint64, LatencyBucketCount())
 	}
+	h.Failures += other.Failures
 	if len(other.Counts) == 0 {
+		h.Total += other.Total
+		h.SumUs += other.SumUs
 		return
 	}
 	n := len(h.Counts)
@@ -67,9 +76,10 @@ func (h *LatencyHistogram) Merge(other LatencyHistogram) {
 // Clone returns a deep copy.
 func (h LatencyHistogram) Clone() LatencyHistogram {
 	out := LatencyHistogram{
-		Total: h.Total,
-		SumUs: h.SumUs,
-		Counts: make([]uint64, LatencyBucketCount()),
+		Total:    h.Total,
+		SumUs:    h.SumUs,
+		Failures: h.Failures,
+		Counts:   make([]uint64, LatencyBucketCount()),
 	}
 	copy(out.Counts, h.Counts)
 	return out

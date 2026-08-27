@@ -88,7 +88,12 @@
           </label>
           <label>
             UNTAR <span class="hint">optional · per-host download + tar xvf under &lt;prefix&gt;/&lt;test&gt;/&lt;hostname&gt;/untar</span>
-            <input name="untar_url" type="url" placeholder="https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.2.tar.xz" />
+            <select id="untar-url-preset" class="preset-select">
+              <option value="">Custom…</option>
+              <option value="https://xrootd.web.cern.ch/download/v6.1.1/xrootd-6.1.1.tar.gz">xrootd 6.1.1</option>
+              <option value="https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.2.tar.xz">linux 7.2 kernel</option>
+            </select>
+            <input name="untar_url" type="url" placeholder="https://xrootd.web.cern.ch/download/v6.1.1/xrootd-6.1.1.tar.gz" />
           </label>
           <button type="submit" class="btn secondary">Save configuration</button>
           <p id="config-msg" class="msg"></p>
@@ -173,7 +178,7 @@
     <section class="panel latency">
       <div class="chart-head">
         <h2>Operation latency</h2>
-        <span class="hint">syscall / file-op wall time · cumulative for this run · p95/p99 from buckets</span>
+        <span class="hint">syscall / file-op wall time · cumulative for this run · p95/p99 from buckets · red = failures</span>
       </div>
       <div class="hist-grid">
         <div class="hist-card">
@@ -247,6 +252,7 @@
                 <tr>
                   <th>Operation</th>
                   <th>Avg</th>
+                  <th>Fail</th>
                 </tr>
               </thead>
               <tbody id="results-latency-body"></tbody>

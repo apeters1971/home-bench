@@ -61,9 +61,21 @@ func (s *Stats) ObserveStartupCold(d time.Duration) {
 	s.latMu.Unlock()
 }
 
+func (s *Stats) ObserveStartupColdFailure() {
+	s.latMu.Lock()
+	s.latencies.StartupCold.ObserveFailure()
+	s.latMu.Unlock()
+}
+
 func (s *Stats) ObserveStartupWarm(d time.Duration) {
 	s.latMu.Lock()
 	s.latencies.StartupWarm.ObserveUs(float64(d.Microseconds()))
+	s.latMu.Unlock()
+}
+
+func (s *Stats) ObserveStartupWarmFailure() {
+	s.latMu.Lock()
+	s.latencies.StartupWarm.ObserveFailure()
 	s.latMu.Unlock()
 }
 
@@ -73,9 +85,21 @@ func (s *Stats) ObserveGitClone(d time.Duration) {
 	s.latMu.Unlock()
 }
 
+func (s *Stats) ObserveGitCloneFailure() {
+	s.latMu.Lock()
+	s.latencies.GitClone.ObserveFailure()
+	s.latMu.Unlock()
+}
+
 func (s *Stats) ObserveUntar(d time.Duration) {
 	s.latMu.Lock()
 	s.latencies.Untar.ObserveUs(float64(d.Microseconds()))
+	s.latMu.Unlock()
+}
+
+func (s *Stats) ObserveUntarFailure() {
+	s.latMu.Lock()
+	s.latencies.Untar.ObserveFailure()
 	s.latMu.Unlock()
 }
 

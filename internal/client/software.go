@@ -38,10 +38,20 @@ func (w *Worker) prepareHostWorkDir(cmd protocol.PhaseCommand, sub string) (stri
 func (w *Worker) runSoftwareStartup(ctx context.Context, cmd protocol.PhaseCommand, cold bool) error {
 	dir := w.softwareDir(cmd)
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		if cold {
+			w.Stats.ObserveStartupColdFailure()
+		} else {
+			w.Stats.ObserveStartupWarmFailure()
+		}
 		return fmt.Errorf("software dir missing: %s (controller should unpack first)", dir)
 	}
 	startup := strings.TrimSpace(cmd.StartupCommand)
 	if startup == "" {
+		if cold {
+			w.Stats.ObserveStartupColdFailure()
+		} else {
+			w.Stats.ObserveStartupWarmFailure()
+		}
 		return fmt.Errorf("startup_command is empty")
 	}
 
@@ -59,13 +69,18 @@ func (w *Worker) runSoftwareStartup(ctx context.Context, cmd protocol.PhaseComma
 	t0 := time.Now()
 	err := runShellCommand(runCtx, dir, startup)
 	elapsed := time.Since(t0)
+	if err != nil {
+		if cold {
+			w.Stats.ObserveStartupColdFailure()
+		} else {
+			w.Stats.ObserveStartupWarmFailure()
+		}
+		return fmt.Errorf("startup (cold=%v) after %s: %w", cold, elapsed, err)
+	}
 	if cold {
 		w.Stats.ObserveStartupCold(elapsed)
 	} else {
 		w.Stats.ObserveStartupWarm(elapsed)
-	}
-	if err != nil {
-		return fmt.Errorf("startup (cold=%v) after %s: %w", cold, elapsed, err)
 	}
 	// Shared software tree is removed by the controller after warm completes,
 	// so clients can report idle immediately (RemoveAll would block the phase).
@@ -75,37 +90,45 @@ func (w *Worker) runSoftwareStartup(ctx context.Context, cmd protocol.PhaseComma
 func (w *Worker) runGitClone(ctx context.Context, cmd protocol.PhaseCommand) error {
 	dir, err := w.prepareHostWorkDir(cmd, "git")
 	if err != nil {
+		w.Stats.ObserveGitCloneFailure()
 		return err
 	}
 	url := strings.TrimSpace(cmd.GitCloneURL)
 	if url == "" {
+		w.Stats.ObserveGitCloneFailure()
+		_ = os.RemoveAll(dir)
 		return fmt.Errorf("git_clone_url is empty")
 	}
 
 	t0 := time.Now()
 	err = runShellCommand(ctx, dir, "git clone "+shellQuote(url))
 	elapsed := time.Since(t0)
-	w.Stats.ObserveGitClone(elapsed)
 	// Cleanup after measurement so histogram excludes delete time.
 	_ = os.RemoveAll(dir)
 	if err != nil {
+		w.Stats.ObserveGitCloneFailure()
 		return fmt.Errorf("git clone after %s: %w", elapsed, err)
 	}
+	w.Stats.ObserveGitClone(elapsed)
 	return nil
 }
 
 func (w *Worker) runUntar(ctx context.Context, cmd protocol.PhaseCommand) error {
 	dir, err := w.prepareHostWorkDir(cmd, "untar")
 	if err != nil {
+		w.Stats.ObserveUntarFailure()
 		return err
 	}
 	url := strings.TrimSpace(cmd.UntarURL)
 	if url == "" {
+		w.Stats.ObserveUntarFailure()
+		_ = os.RemoveAll(dir)
 		return fmt.Errorf("untar_url is empty")
 	}
 
 	archivePath := filepath.Join(dir, ".archive"+archiveSuffix(url))
 	if err := software.DownloadFile(ctx, url, archivePath); err != nil {
+		w.Stats.ObserveUntarFailure()
 		_ = os.RemoveAll(dir)
 		return err
 	}
@@ -113,12 +136,13 @@ func (w *Worker) runUntar(ctx context.Context, cmd protocol.PhaseCommand) error 
 	t0 := time.Now()
 	err = runShellCommand(ctx, dir, "tar xvf "+shellQuote(filepath.Base(archivePath)))
 	elapsed := time.Since(t0)
-	w.Stats.ObserveUntar(elapsed)
 	// Cleanup after measurement so histogram excludes delete time.
 	_ = os.RemoveAll(dir)
 	if err != nil {
+		w.Stats.ObserveUntarFailure()
 		return fmt.Errorf("tar xvf after %s: %w", elapsed, err)
 	}
+	w.Stats.ObserveUntar(elapsed)
 	return nil
 }
 

@@ -44,8 +44,8 @@ const (
 	DefaultStartupCommand = ". root/bin/thisroot.sh; root -b -q"
 	// DefaultGitCloneURL is cloned into <prefix>/<test>/software when set.
 	DefaultGitCloneURL = "https://gitlab.cern.ch/dss/eos.git"
-	// DefaultUntarURL is downloaded and unpacked with tar xvf into software/.
-	DefaultUntarURL = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.2.tar.xz"
+	// DefaultUntarURL is downloaded and unpacked with tar xvf per host.
+	DefaultUntarURL = "https://xrootd.web.cern.ch/download/v6.1.1/xrootd-6.1.1.tar.gz"
 	// SoftwareUnpackTimeout bounds download+extract / git clone / untar per client.
 	SoftwareUnpackTimeout = 30 * time.Minute
 	// SoftwareStartupColdTimeout / WarmTimeout bound cold vs warm startup.

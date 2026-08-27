@@ -333,6 +333,21 @@ label {
   font-weight: 500;
 }
 
+.preset-select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font: 400 0.92rem var(--font);
+  background: rgba(255,255,255,0.9);
+  color: var(--ink);
+}
+
+.preset-select:focus {
+  outline: 2px solid rgba(15, 122, 95, 0.25);
+  border-color: var(--accent);
+}
+
 input, textarea {
   width: 100%;
   border: 1px solid var(--line);

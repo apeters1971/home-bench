@@ -201,6 +201,38 @@ function applyConfigForm(cfg) {
   form.startup_command.value = cfg.startup_command || "";
   form.git_clone_url.value = cfg.git_clone_url || "";
   form.untar_url.value = cfg.untar_url || "";
+  syncUntarPresetSelect();
+}
+
+const UNTAR_PRESETS = [
+  "https://xrootd.web.cern.ch/download/v6.1.1/xrootd-6.1.1.tar.gz",
+  "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.2.tar.xz",
+];
+
+function syncUntarPresetSelect() {
+  const sel = $("untar-url-preset");
+  const input = $("config-form")?.untar_url;
+  if (!sel || !input) return;
+  const v = String(input.value || "").trim();
+  sel.value = UNTAR_PRESETS.includes(v) ? v : "";
+}
+
+function bindUntarPresetSelect() {
+  const sel = $("untar-url-preset");
+  const form = $("config-form");
+  if (!sel || !form || sel.dataset.bound) return;
+  sel.dataset.bound = "1";
+  sel.addEventListener("change", () => {
+    if (sel.value) {
+      form.untar_url.value = sel.value;
+      return;
+    }
+    // Choosing Custom while a preset is selected clears the field; keep a typed custom URL.
+    if (UNTAR_PRESETS.includes(String(form.untar_url.value || "").trim())) {
+      form.untar_url.value = "";
+    }
+  });
+  form.untar_url.addEventListener("input", syncUntarPresetSelect);
 }
 
 function render(snap) {
@@ -448,7 +480,7 @@ const LATENCY_RESULT_SPECS = [
 function phaseChartEndLabel(span, history, cfg, isBytes, bwFiles) {
   if (!span?.end) return null;
   const att = phaseAttainment(span, history, cfg, isBytes, bwFiles);
-  if (att != null) return `${Math.round(att)}%`;
+  if (att != null) return `${Math.round(Math.min(100, att))}%`;
   if (DURATION_LABEL_PHASES.has(span.phase)) {
     const ms = new Date(span.end).getTime() - new Date(span.start).getTime();
     return formatPhaseDuration(ms);
@@ -482,7 +514,8 @@ function resultsLatencyRows(snap) {
     title,
     avg: formatLatencyAvg(lat[key]),
     n: Number(lat[key]?.total) || 0,
-  })).filter((r) => r.n > 0);
+    fail: Number(lat[key]?.failures) || 0,
+  })).filter((r) => r.n > 0 || r.fail > 0);
 }
 
 function renderResults(snap) {
@@ -518,7 +551,7 @@ function renderResults(snap) {
       : `<tr><td colspan="2">No finished phases yet</td></tr>`;
   }
 
-  const latSig = latRows.map((r) => `${r.title}\0${r.avg}`).join("\n");
+  const latSig = latRows.map((r) => `${r.title}\0${r.avg}\0${r.fail}`).join("\n");
   if (latBody.dataset.sig !== latSig) {
     latBody.dataset.sig = latSig;
     latBody.innerHTML = latRows.length
@@ -527,10 +560,11 @@ function renderResults(snap) {
             (r) => `<tr>
         <td>${escapeHtml(r.title)}</td>
         <td>${escapeHtml(r.avg)}</td>
+        <td>${r.fail ? escapeHtml(String(r.fail)) : "—"}</td>
       </tr>`
           )
           .join("")
-      : `<tr><td colspan="2">No latency samples yet</td></tr>`;
+      : `<tr><td colspan="3">No latency samples yet</td></tr>`;
   }
 }
 
@@ -555,12 +589,13 @@ function resultsSummaryHTML(snap) {
 
   const latTable = latRows.length
     ? `<table>
-      <thead><tr><th>Operation</th><th>Avg</th></tr></thead>
+      <thead><tr><th>Operation</th><th>Avg</th><th>Fail</th></tr></thead>
       <tbody>${latRows
         .map(
           (r) => `<tr>
         <td>${escapeHTML(r.title)}</td>
         <td class="mono">${escapeHTML(r.avg)}</td>
+        <td class="mono">${r.fail ? escapeHTML(String(r.fail)) : "—"}</td>
       </tr>`
         )
         .join("")}</tbody>
@@ -605,8 +640,11 @@ function formatLatencyPercentile(hist, edges, pct) {
 
 function formatLatencyMeta(hist, edges) {
   const n = hist?.total || 0;
-  if (!n) return "n=0";
-  return `n=${n} · avg ${formatLatencyAvg(hist)} · p95 ${formatLatencyPercentile(hist, edges, 95)} · p99 ${formatLatencyPercentile(hist, edges, 99)}`;
+  const fail = Number(hist?.failures) || 0;
+  if (!n && !fail) return "n=0";
+  if (!n) return `n=0 · fail=${fail}`;
+  const base = `n=${n} · avg ${formatLatencyAvg(hist)} · p95 ${formatLatencyPercentile(hist, edges, 95)} · p99 ${formatLatencyPercentile(hist, edges, 99)}`;
+  return fail ? `${base} · fail=${fail}` : base;
 }
 
 function formatLatencyBucket(edges, i) {
@@ -645,14 +683,14 @@ function bindHistHover(canvas) {
 
   canvas.addEventListener("mousemove", (e) => {
     const meta = canvas._hist;
-    if (!meta?.nBuckets || !meta.total) {
+    if (!meta?.nSlots || !(meta.total || meta.failures)) {
       hideTooltip(canvas);
       return;
     }
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    const { pad, plotW, plotH, nBuckets, gap, barW } = meta;
+    const { pad, plotW, plotH, nSlots, gap, barW } = meta;
     if (x < pad.l || x > pad.l + plotW || y < pad.t || y > pad.t + plotH) {
       if (state.histHover?.canvasId === canvas.id) {
         state.histHover = null;
@@ -662,7 +700,7 @@ function bindHistHover(canvas) {
       return;
     }
     const idx = Math.min(
-      nBuckets - 1,
+      nSlots - 1,
       Math.max(0, Math.floor((x - pad.l) / (barW + gap)))
     );
     const prev = state.histHover;
@@ -684,12 +722,14 @@ function showHistTooltip(canvas, idx, localX, localY) {
   const meta = canvas._hist;
   const tip = ensureTooltip(canvas);
   if (!meta || !tip || idx < 0) return;
-  const count = Number(meta.counts[idx]) || 0;
-  const range = formatLatencyBucket(meta.edges, idx);
-  const pct = meta.total ? ((count / meta.total) * 100).toFixed(1) : "0.0";
+  const isFail = idx === meta.failIndex;
+  const count = isFail ? Number(meta.failures) || 0 : Number(meta.counts[idx]) || 0;
+  const range = isFail ? "failed" : formatLatencyBucket(meta.edges, idx);
+  const denom = (meta.total || 0) + (meta.failures || 0);
+  const pct = denom ? ((count / denom) * 100).toFixed(1) : "0.0";
   tip.innerHTML =
     `<div class="tt-time">${meta.title}</div>` +
-    `<div class="tt-row"><span class="tt-name">Latency</span><span class="tt-val">${range}</span></div>` +
+    `<div class="tt-row"><span class="tt-name">${isFail ? "Result" : "Latency"}</span><span class="tt-val">${range}</span></div>` +
     `<div class="tt-row"><span class="tt-name">Count</span><span class="tt-val">${count}</span></div>` +
     `<div class="tt-row"><span class="tt-name">Share</span><span class="tt-val">${pct}%</span></div>`;
   tip.classList.add("visible");
@@ -723,24 +763,32 @@ function drawHistogram(canvas, edges, hist, color, title) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
 
+  const FAIL_COLOR = "#b91c1c";
   const pad = { l: 36, r: 10, t: 10, b: 28 };
   const plotW = width - pad.l - pad.r;
   const plotH = height - pad.t - pad.b;
   const counts = hist?.counts || [];
+  const failures = Number(hist?.failures) || 0;
   const nBuckets = Math.max(counts.length, edges.length + 1);
+  const showFail = failures > 0;
+  const nSlots = nBuckets + (showFail ? 1 : 0);
+  const failIndex = showFail ? nBuckets : -1;
   const gap = 1;
-  const barW = Math.max(1, (plotW - gap * (nBuckets - 1)) / nBuckets);
+  const barW = Math.max(1, (plotW - gap * Math.max(0, nSlots - 1)) / Math.max(1, nSlots));
   const hoverIdx = state.histHover?.canvasId === canvas.id ? state.histHover.index : -1;
 
   canvas._hist = {
     edges,
     counts,
     total: hist?.total || 0,
+    failures,
+    failIndex,
     title: title || canvas.id,
     pad,
     plotW,
     plotH,
     nBuckets,
+    nSlots,
     gap,
     barW,
     color,
@@ -756,7 +804,7 @@ function drawHistogram(canvas, edges, hist, color, title) {
     ctx.stroke();
   }
 
-  if (!hist?.total) {
+  if (!(hist?.total || failures)) {
     ctx.fillStyle = "#5c6b64";
     ctx.font = "12px Sora, sans-serif";
     ctx.textAlign = "left";
@@ -766,6 +814,7 @@ function drawHistogram(canvas, edges, hist, color, title) {
 
   let maxC = 1;
   for (let i = 0; i < nBuckets; i++) maxC = Math.max(maxC, Number(counts[i]) || 0);
+  if (showFail) maxC = Math.max(maxC, failures);
 
   for (let i = 0; i < nBuckets; i++) {
     const c = Number(counts[i]) || 0;
@@ -780,41 +829,55 @@ function drawHistogram(canvas, edges, hist, color, title) {
       ctx.fillRect(x, pad.t, barW, plotH);
     }
   }
+  if (showFail) {
+    const h = (failures / maxC) * plotH;
+    const x = pad.l + failIndex * (barW + gap);
+    const y = pad.t + plotH - h;
+    ctx.globalAlpha = failIndex === hoverIdx ? 1 : 0.85;
+    ctx.fillStyle = FAIL_COLOR;
+    ctx.fillRect(x, y, barW, Math.max(h, 1));
+    if (failIndex === hoverIdx) {
+      ctx.globalAlpha = 0.18;
+      ctx.fillRect(x, pad.t, barW, plotH);
+    }
+  }
   ctx.globalAlpha = 1;
 
   // p95 / p99 markers at the bucket that contains each percentile.
-  const markers = [
-    { pct: 95, stroke: "rgba(20,32,28,0.55)", label: "p95" },
-    { pct: 99, stroke: "rgba(185,28,28,0.75)", label: "p99" },
-  ];
-  const markerByIdx = new Map();
-  for (const m of markers) {
-    const p = histogramPercentile(hist, edges, m.pct);
-    if (!p || p.index < 0 || p.index >= nBuckets) continue;
-    const list = markerByIdx.get(p.index) || [];
-    list.push(m);
-    markerByIdx.set(p.index, list);
-  }
-  ctx.font = "9px IBM Plex Mono, monospace";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "top";
-  for (const [index, list] of markerByIdx) {
-    const x = pad.l + index * (barW + gap) + barW / 2;
-    for (let i = 0; i < list.length; i++) {
-      const m = list[i];
-      ctx.strokeStyle = m.stroke;
-      ctx.lineWidth = 1.25;
-      ctx.setLineDash([3, 3]);
-      ctx.beginPath();
-      ctx.moveTo(x, pad.t);
-      ctx.lineTo(x, pad.t + plotH);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = m.stroke;
-      ctx.fillText(m.label, x, pad.t + 1 + i * 11);
+  if (hist?.total) {
+    const markers = [
+      { pct: 95, stroke: "rgba(20,32,28,0.55)", label: "p95" },
+      { pct: 99, stroke: "rgba(185,28,28,0.75)", label: "p99" },
+    ];
+    const markerByIdx = new Map();
+    for (const m of markers) {
+      const p = histogramPercentile(hist, edges, m.pct);
+      if (!p || p.index < 0 || p.index >= nBuckets) continue;
+      const list = markerByIdx.get(p.index) || [];
+      list.push(m);
+      markerByIdx.set(p.index, list);
     }
+    ctx.font = "9px IBM Plex Mono, monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    for (const [index, list] of markerByIdx) {
+      const x = pad.l + index * (barW + gap) + barW / 2;
+      for (let i = 0; i < list.length; i++) {
+        const m = list[i];
+        ctx.strokeStyle = m.stroke;
+        ctx.lineWidth = 1.25;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(x, pad.t);
+        ctx.lineTo(x, pad.t + plotH);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = m.stroke;
+        ctx.fillText(m.label, x, pad.t + 1 + i * 11);
+      }
+    }
+    ctx.textBaseline = "alphabetic";
   }
-  ctx.textBaseline = "alphabetic";
 
   ctx.fillStyle = "#5c6b64";
   ctx.font = "10px IBM Plex Mono, monospace";
@@ -834,6 +897,10 @@ function drawHistogram(canvas, edges, hist, color, title) {
   }
   // Overflow bucket marker
   ctx.fillText(">", pad.l + (nBuckets - 1) * (barW + gap) + barW / 2, height - 8);
+  if (showFail) {
+    ctx.fillStyle = FAIL_COLOR;
+    ctx.fillText("fail", pad.l + failIndex * (barW + gap) + barW / 2, height - 8);
+  }
 }
 
 function drawCharts(history) {
@@ -1647,6 +1714,7 @@ function connectWS() {
 async function bootstrap() {
   buildPhaseRow();
   $("config-form").addEventListener("submit", saveConfig);
+  bindUntarPresetSelect();
   $("btn-start").addEventListener("click", startTest);
   $("btn-stop").addEventListener("click", stopTest);
   bindParticipantControls();
