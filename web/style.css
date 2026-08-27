@@ -387,28 +387,45 @@ input:focus, textarea:focus {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px 16px;
+  gap: 10px 20px;
   margin-top: 10px;
   font-size: 0.82rem;
   color: var(--muted);
 }
 
-.clients-tool {
+/* Override form label { display:grid } so toolbar items stay in a row. */
+label.clients-tool {
   display: inline-flex;
+  flex-direction: row;
   align-items: center;
   gap: 6px;
+  flex: 0 0 auto;
+  width: auto;
   margin: 0;
+  white-space: nowrap;
   font-weight: 500;
   color: var(--ink);
 }
 
+.clients-tool input[type="checkbox"] {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+  margin: 0;
+}
+
 .clients-tool input[type="number"] {
   width: 4.2rem;
+  flex: 0 0 auto;
   padding: 4px 6px;
   border: 1px solid var(--line);
   border-radius: 6px;
   font: 500 0.82rem var(--mono);
   background: rgba(255, 255, 255, 0.7);
+}
+
+.clients-tools .btn-tiny {
+  flex: 0 0 auto;
 }
 
 .clients-tools.locked,
