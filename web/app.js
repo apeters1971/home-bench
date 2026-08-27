@@ -224,6 +224,12 @@ function render(snap) {
   $("client-count").textContent = String(snap.client_count ?? snap.clients?.length ?? 0);
   $("status-text").textContent = snap.status_text || "Ready";
   $("percent").textContent = snap.running && snap.percent ? `${snap.percent}%` : "";
+  const hostEl = $("controller-host");
+  if (hostEl) {
+    const host = snap.controller_hostname || "";
+    hostEl.textContent = host;
+    hostEl.title = host ? `Controller node: ${host}` : "";
+  }
 
   $("btn-start").disabled = !!snap.running;
   $("btn-stop").disabled = !snap.running;
@@ -1448,6 +1454,7 @@ function downloadReport() {
     <p class="kv"><span>Elapsed</span><strong class="mono">${escapeHTML(formatElapsed(snap.elapsed_sec))}</strong></p>
     <p class="kv"><span>Started</span><strong>${escapeHTML(started)}</strong></p>
     <p class="kv"><span>Clients</span><strong class="mono">${escapeHTML(String(snap.client_count ?? clients.length))}</strong></p>
+    <p class="kv"><span>Controller</span><strong class="mono">${escapeHTML(snap.controller_hostname || "—")}</strong></p>
     <p class="kv"><span>Phase</span><strong>${escapeHTML(PHASE_LABELS[snap.phase] || snap.phase || "—")}${snap.percent ? ` · ${snap.percent}%` : ""}</strong></p>
     <p class="kv"><span>Running</span><strong>${snap.running ? "yes" : "no"}</strong></p>
   </div>

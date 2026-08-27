@@ -217,20 +217,21 @@ type PhaseSpan struct {
 
 // UIState is the snapshot served to the Web UI.
 type UIState struct {
-	Config      Config             `json:"config"`
-	Clients     []ClientInfo       `json:"clients"`
-	Running     bool               `json:"running"`
-	Phase       Phase              `json:"phase"`
-	Percent     int                `json:"percent"`
-	StartedAt   *time.Time         `json:"started_at,omitempty"`
-	ElapsedSec  float64            `json:"elapsed_sec"`
-	History         []AggregatedSample `json:"history"`
-	Latencies       LatencySet         `json:"latencies"`
-	LatencyEdgesUs  []float64          `json:"latency_edges_us"`
-	PhaseSpans      []PhaseSpan        `json:"phase_spans"`
-	PhaseOrder      []Phase            `json:"phase_order"`
-	StatusText      string             `json:"status_text"`
-	ClientCount     int                `json:"client_count"`
+	Config              Config             `json:"config"`
+	Clients             []ClientInfo       `json:"clients"`
+	Running             bool               `json:"running"`
+	Phase               Phase              `json:"phase"`
+	Percent             int                `json:"percent"`
+	StartedAt           *time.Time         `json:"started_at,omitempty"`
+	ElapsedSec          float64            `json:"elapsed_sec"`
+	History             []AggregatedSample `json:"history"`
+	Latencies           LatencySet         `json:"latencies"`
+	LatencyEdgesUs      []float64          `json:"latency_edges_us"`
+	PhaseSpans          []PhaseSpan        `json:"phase_spans"`
+	PhaseOrder          []Phase            `json:"phase_order"`
+	StatusText          string             `json:"status_text"`
+	ClientCount         int                `json:"client_count"`
+	ControllerHostname  string             `json:"controller_hostname"`
 }
 
 // PhaseOrder is the base sequence of a full run (without optional software phases).

@@ -28,6 +28,7 @@ type Orchestrator struct {
 	metrics    *MetricsStore
 	broadcast  Broadcaster
 	configPath string
+	hostname   string
 
 	running    bool
 	phase      protocol.Phase
@@ -59,12 +60,14 @@ func NewOrchestrator(reg *Registry, metrics *MetricsStore, bc Broadcaster, confi
 			log.Printf("config load %s: %v — using defaults", configPath, err)
 		}
 	}
+	hostname, _ := os.Hostname()
 	return &Orchestrator{
 		cfg:        cfg,
 		registry:   reg,
 		metrics:    metrics,
 		broadcast:  bc,
 		configPath: configPath,
+		hostname:   hostname,
 		phase:      protocol.PhaseIdle,
 		statusText: "Ready",
 	}
@@ -124,20 +127,21 @@ func (o *Orchestrator) Snapshot() protocol.UIState {
 	spans := make([]protocol.PhaseSpan, len(o.phaseSpans))
 	copy(spans, o.phaseSpans)
 	return protocol.UIState{
-		Config:      o.cfg,
-		Clients:     o.registry.List(),
-		Running:     o.running,
-		Phase:       o.phase,
-		Percent:     o.percent,
-		StartedAt:   o.startedAt,
-		ElapsedSec:  elapsed,
-		History:        o.metrics.History(),
-		Latencies:      o.metrics.Latencies(),
-		LatencyEdgesUs: append([]float64(nil), protocol.LatencyBucketEdgesUs...),
-		PhaseSpans:     spans,
-		PhaseOrder:     protocol.EffectivePhaseOrder(o.cfg),
-		StatusText:  o.statusText,
-		ClientCount: o.registry.Count(),
+		Config:             o.cfg,
+		Clients:            o.registry.List(),
+		Running:            o.running,
+		Phase:              o.phase,
+		Percent:            o.percent,
+		StartedAt:          o.startedAt,
+		ElapsedSec:         elapsed,
+		History:            o.metrics.History(),
+		Latencies:          o.metrics.Latencies(),
+		LatencyEdgesUs:     append([]float64(nil), protocol.LatencyBucketEdgesUs...),
+		PhaseSpans:         spans,
+		PhaseOrder:         protocol.EffectivePhaseOrder(o.cfg),
+		StatusText:         o.statusText,
+		ClientCount:        o.registry.Count(),
+		ControllerHostname: o.hostname,
 	}
 }
 
