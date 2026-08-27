@@ -114,27 +114,35 @@ func (w *Worker) runGitClone(ctx context.Context, cmd protocol.PhaseCommand) err
 }
 
 func (w *Worker) runUntar(ctx context.Context, cmd protocol.PhaseCommand) error {
+	url := strings.TrimSpace(cmd.UntarURL)
+	if url == "" {
+		w.Stats.ObserveUntarFailure()
+		return fmt.Errorf("untar_url is empty")
+	}
+
+	// Download to local scratch so the timed section is unpack onto the shared FS only.
+	tmpFile, err := os.CreateTemp(localScratchDir(), "homebench-untar-*"+archiveSuffix(url))
+	if err != nil {
+		w.Stats.ObserveUntarFailure()
+		return fmt.Errorf("temp archive: %w", err)
+	}
+	archivePath := tmpFile.Name()
+	_ = tmpFile.Close()
+	defer os.Remove(archivePath)
+
+	if err := software.DownloadFile(ctx, url, archivePath); err != nil {
+		w.Stats.ObserveUntarFailure()
+		return err
+	}
+
 	dir, err := w.prepareHostWorkDir(cmd, "untar")
 	if err != nil {
 		w.Stats.ObserveUntarFailure()
 		return err
 	}
-	url := strings.TrimSpace(cmd.UntarURL)
-	if url == "" {
-		w.Stats.ObserveUntarFailure()
-		_ = os.RemoveAll(dir)
-		return fmt.Errorf("untar_url is empty")
-	}
-
-	archivePath := filepath.Join(dir, ".archive"+archiveSuffix(url))
-	if err := software.DownloadFile(ctx, url, archivePath); err != nil {
-		w.Stats.ObserveUntarFailure()
-		_ = os.RemoveAll(dir)
-		return err
-	}
 
 	t0 := time.Now()
-	err = runShellCommand(ctx, dir, "tar xvf "+shellQuote(filepath.Base(archivePath)))
+	err = runShellCommand(ctx, dir, "tar xvf "+shellQuote(archivePath))
 	elapsed := time.Since(t0)
 	// Cleanup after measurement so histogram excludes delete time.
 	_ = os.RemoveAll(dir)
@@ -144,6 +152,16 @@ func (w *Worker) runUntar(ctx context.Context, cmd protocol.PhaseCommand) error 
 	}
 	w.Stats.ObserveUntar(elapsed)
 	return nil
+}
+
+// localScratchDir prefers /var/tmp for large archives, then /tmp, then os.TempDir.
+func localScratchDir() string {
+	for _, d := range []string{"/var/tmp", "/tmp"} {
+		if st, err := os.Stat(d); err == nil && st.IsDir() {
+			return d
+		}
+	}
+	return os.TempDir()
 }
 
 func archiveSuffix(url string) string {
