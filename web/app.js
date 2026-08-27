@@ -235,6 +235,7 @@ function render(snap) {
   renderClients(snap.clients || []);
   drawCharts(snap.history || []);
   drawLatencyHistograms(snap);
+  renderResults(snap);
 
   // Live WS redraws must not steal focus or jump the viewport (e.g. toward charts).
   window.scrollTo(scrollX, scrollY);
@@ -307,6 +308,165 @@ function formatLatencyUs(us) {
 function formatLatencyAvg(hist) {
   if (!hist?.total) return "—";
   return formatLatencyUs(hist.sum_us / hist.total);
+}
+
+// Phases whose chart end label is wall duration (not attainment %).
+const DURATION_LABEL_PHASES = new Set([
+  "software_unpack",
+  "software_cold",
+  "software_warm",
+  "git_clone",
+  "untar",
+]);
+
+const LATENCY_RESULT_SPECS = [
+  ["Create", "create"],
+  ["Delete", "delete"],
+  ["Write", "write"],
+  ["Read", "read"],
+  ["Software Startup Cold", "startup_cold"],
+  ["Software Startup Warm", "startup_warm"],
+  ["Git Clone", "git_clone"],
+  ["Untar", "untar"],
+];
+
+// Same value drawn at the end of a finished phase band on the charts.
+function phaseChartEndLabel(span, history, cfg, isBytes, bwFiles) {
+  if (!span?.end) return null;
+  const att = phaseAttainment(span, history, cfg, isBytes, bwFiles);
+  if (att != null) return `${Math.round(att)}%`;
+  if (DURATION_LABEL_PHASES.has(span.phase)) {
+    const ms = new Date(span.end).getTime() - new Date(span.start).getTime();
+    return formatPhaseDuration(ms);
+  }
+  return null;
+}
+
+function resultsPhaseRows(snap) {
+  const spans = snap.phase_spans || [];
+  const cfg = snap.config || {};
+  const rawHistory = snap.history || [];
+  const smoothed = smoothHistory(rawHistory);
+  const bwFiles = estimateBWFileCount(rawHistory, spans);
+  const rows = [];
+  for (const span of spans) {
+    if (!span.end) continue;
+    const iops = phaseChartEndLabel(span, smoothed, cfg, false, bwFiles);
+    const bw = phaseChartEndLabel(span, smoothed, cfg, true, bwFiles);
+    if (iops == null && bw == null) continue;
+    rows.push({
+      phase: PHASE_LABELS[span.phase] || span.phase,
+      iops: iops || "—",
+      bw: bw || "—",
+    });
+  }
+  return rows;
+}
+
+function resultsLatencyRows(snap) {
+  const lat = snap.latencies || {};
+  return LATENCY_RESULT_SPECS.map(([title, key]) => ({
+    title,
+    avg: formatLatencyAvg(lat[key]),
+    n: Number(lat[key]?.total) || 0,
+  })).filter((r) => r.n > 0);
+}
+
+function renderResults(snap) {
+  const panel = $("results-panel");
+  const phaseBody = $("results-phase-body");
+  const latBody = $("results-latency-body");
+  if (!panel || !phaseBody || !latBody) return;
+
+  const phaseRows = resultsPhaseRows(snap);
+  const latRows = resultsLatencyRows(snap);
+  if (!phaseRows.length && !latRows.length) {
+    panel.hidden = true;
+    phaseBody.innerHTML = "";
+    latBody.innerHTML = "";
+    phaseBody.dataset.sig = "";
+    latBody.dataset.sig = "";
+    return;
+  }
+  panel.hidden = false;
+
+  const phaseSig = phaseRows.map((r) => `${r.phase}\0${r.iops}\0${r.bw}`).join("\n");
+  if (phaseBody.dataset.sig !== phaseSig) {
+    phaseBody.dataset.sig = phaseSig;
+    phaseBody.innerHTML = phaseRows.length
+      ? phaseRows
+          .map(
+            (r) => `<tr>
+        <td>${escapeHtml(r.phase)}</td>
+        <td>${escapeHtml(r.iops)}</td>
+        <td>${escapeHtml(r.bw)}</td>
+      </tr>`
+          )
+          .join("")
+      : `<tr><td colspan="3">No finished phases yet</td></tr>`;
+  }
+
+  const latSig = latRows.map((r) => `${r.title}\0${r.avg}`).join("\n");
+  if (latBody.dataset.sig !== latSig) {
+    latBody.dataset.sig = latSig;
+    latBody.innerHTML = latRows.length
+      ? latRows
+          .map(
+            (r) => `<tr>
+        <td>${escapeHtml(r.title)}</td>
+        <td>${escapeHtml(r.avg)}</td>
+      </tr>`
+          )
+          .join("")
+      : `<tr><td colspan="2">No latency samples yet</td></tr>`;
+  }
+}
+
+function resultsSummaryHTML(snap) {
+  const phaseRows = resultsPhaseRows(snap);
+  const latRows = resultsLatencyRows(snap);
+  if (!phaseRows.length && !latRows.length) return "";
+
+  const phaseTable = phaseRows.length
+    ? `<table>
+      <thead><tr><th>Phase</th><th>IOPS</th><th>Bandwidth</th></tr></thead>
+      <tbody>${phaseRows
+        .map(
+          (r) => `<tr>
+        <td>${escapeHTML(r.phase)}</td>
+        <td class="mono">${escapeHTML(r.iops)}</td>
+        <td class="mono">${escapeHTML(r.bw)}</td>
+      </tr>`
+        )
+        .join("")}</tbody>
+    </table>`
+    : "<p class='muted'>No finished phase labels</p>";
+
+  const latTable = latRows.length
+    ? `<table>
+      <thead><tr><th>Operation</th><th>Avg</th></tr></thead>
+      <tbody>${latRows
+        .map(
+          (r) => `<tr>
+        <td>${escapeHTML(r.title)}</td>
+        <td class="mono">${escapeHTML(r.avg)}</td>
+      </tr>`
+        )
+        .join("")}</tbody>
+    </table>`
+    : "<p class='muted'>No latency averages</p>";
+
+  return `<h2>Results</h2>
+  <div class="grid">
+    <div>
+      <h3>Timeseries</h3>
+      ${phaseTable}
+    </div>
+    <div>
+      <h3>Latency</h3>
+      ${latTable}
+    </div>
+  </div>`;
 }
 
 // Approximate percentile from fixed upper-bound buckets (returns bucket upper edge).
@@ -784,19 +944,7 @@ function drawPhaseBands(ctx, spans, tMin, tMax, pad, plotW, plotH, history, cfg,
 
     // When the phase has finished, show attainment % (IO phases) or duration (software).
     if (span.end && w >= 28) {
-      const att = phaseAttainment(span, history, cfg, isBytes, bwFiles);
-      let endLabel = null;
-      if (att != null) {
-        endLabel = `${Math.round(att)}%`;
-      } else if (
-        span.phase === "software_unpack" ||
-        span.phase === "software_cold" ||
-        span.phase === "software_warm" ||
-        span.phase === "git_clone" ||
-        span.phase === "untar"
-      ) {
-        endLabel = formatPhaseDuration(end - start);
-      }
+      const endLabel = phaseChartEndLabel(span, history, cfg, isBytes, bwFiles);
       if (endLabel) {
         ctx.fillStyle = EXPECTED_COLOR;
         ctx.font = "600 10px IBM Plex Mono, monospace";
@@ -1336,6 +1484,8 @@ function downloadReport() {
 
   <h2>Operation latency</h2>
   <div class="hists">${latencySummaryHTML(snap)}</div>
+
+  ${resultsSummaryHTML(snap)}
 </body>
 </html>`;
 
