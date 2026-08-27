@@ -534,11 +534,13 @@ func (o *Orchestrator) run(ctx context.Context, cfg protocol.Config, nClients in
 		return
 	}
 
-	// 6) Final delete
+	// 6) Final delete (paced ramp), then forced wipe of anything left past the window.
 	if err := o.runRamp(ctx, protocol.PhaseFinalDelete, deleteRate, 0, step); err != nil {
 		return
 	}
-	_ = o.sendAndWait(ctx, protocol.PhaseFinalDelete, 100, deleteRate, 0, 0, step)
+	if err := o.sendFinalCleanup(ctx); err != nil {
+		return
+	}
 }
 
 func (o *Orchestrator) runControllerUnpack(ctx context.Context) error {
@@ -591,6 +593,26 @@ func (o *Orchestrator) runSoftwarePhase(ctx context.Context, phase protocol.Phas
 	}
 	o.broadcastRun(protocol.Envelope{Type: "command", Command: cmd})
 	log.Printf("orchestrator: phase=%s timeout=%s", phase, timeout)
+
+	return o.waitClientsIdle(ctx, timeout)
+}
+
+// sendFinalCleanup asks every participant to RemoveAll their host tree, waiting
+// until idle so cleanup can finish after the paced final-delete window.
+func (o *Orchestrator) sendFinalCleanup(ctx context.Context) error {
+	cfg := o.Config()
+	timeout := protocol.FinalCleanupTimeout
+	o.setPhase(protocol.PhaseFinalDelete, 100, "Final Delete — cleaning remaining")
+
+	cmd := &protocol.PhaseCommand{
+		Phase:        protocol.PhaseFinalDelete,
+		Percent:      100,
+		Duration:     timeout.Seconds(),
+		TestName:     cfg.TestName,
+		ForceCleanup: true,
+	}
+	o.broadcastRun(protocol.Envelope{Type: "command", Command: cmd})
+	log.Printf("orchestrator: final cleanup (force wipe) timeout=%s", timeout)
 
 	return o.waitClientsIdle(ctx, timeout)
 }

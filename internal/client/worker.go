@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -276,7 +277,12 @@ func (w *Worker) Run(ctx context.Context, cmd protocol.PhaseCommand) error {
 		w.Ledger.ResetDeleteCursor()
 		w.Ledger.ClearBW()
 		return w.runCreate(ctx, cmd)
-	case protocol.PhaseDelete, protocol.PhaseFinalDelete:
+	case protocol.PhaseDelete:
+		return w.runDelete(ctx, cmd)
+	case protocol.PhaseFinalDelete:
+		if cmd.ForceCleanup {
+			return w.wipeHostRoot(cmd)
+		}
 		return w.runDelete(ctx, cmd)
 	case protocol.PhaseWriteBW:
 		return w.runWriteBW(ctx, cmd)
@@ -744,6 +750,16 @@ func writeFileDirect(path string, buf []byte, size int64) error {
 		}
 	}
 	return nil
+}
+
+// wipeHostRoot removes the entire per-host test tree and clears the ledger.
+// Used by final_delete ForceCleanup so leftovers are gone even past the paced window.
+func (w *Worker) wipeHostRoot(cmd protocol.PhaseCommand) error {
+	root := HostRoot(cmd.Prefix, cmd.TestName, w.Hostname)
+	log.Printf("final cleanup: removing %s", root)
+	err := os.RemoveAll(root)
+	w.Ledger.Clear()
+	return err
 }
 
 // Cleanup removes test host files and any software tree under the test name.

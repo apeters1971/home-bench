@@ -53,6 +53,9 @@ const (
 	SoftwareStartupWarmTimeout = 300 * time.Second
 	// SoftwareOpTimeout bounds orchestrator wait for git clone or untar.
 	SoftwareOpTimeout = 30 * time.Minute
+	// FinalCleanupTimeout bounds waiting for clients to wipe remaining host trees
+	// after the paced final-delete ramp (may outlive the step window).
+	FinalCleanupTimeout = 30 * time.Minute
 	// WSPingInterval is how often ping frames are sent to keep NAT mappings alive.
 	WSPingInterval = 20 * time.Second
 	// WSReadTimeout is the idle read deadline; refreshed on pong/data.
@@ -170,6 +173,8 @@ type PhaseCommand struct {
 	StartupCommand string  `json:"startup_command,omitempty"`
 	GitCloneURL    string  `json:"git_clone_url,omitempty"`
 	UntarURL       string  `json:"untar_url,omitempty"`
+	// ForceCleanup (final_delete): wipe the host tree completely, ignoring the rate window.
+	ForceCleanup bool `json:"force_cleanup,omitempty"`
 }
 
 // Envelope is the WebSocket / HTTP message wrapper.
