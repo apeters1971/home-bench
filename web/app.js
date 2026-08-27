@@ -514,12 +514,20 @@ function resultsPhaseRows(snap) {
 
 function resultsLatencyRows(snap) {
   const lat = snap.latencies || {};
-  return LATENCY_RESULT_SPECS.map(([title, key]) => ({
-    title,
-    avg: formatLatencyAvg(lat[key]),
-    n: Number(lat[key]?.total) || 0,
-    fail: Number(lat[key]?.failures) || 0,
-  })).filter((r) => r.n > 0 || r.fail > 0);
+  const edges = snap.latency_edges_us || [];
+  return LATENCY_RESULT_SPECS.map(([title, key]) => {
+    const hist = lat[key];
+    const n = Number(hist?.total) || 0;
+    const fail = Number(hist?.failures) || 0;
+    return {
+      title,
+      avg: n ? formatLatencyAvg(hist) : "—",
+      p95: n ? formatLatencyPercentile(hist, edges, 95) : "—",
+      p99: n ? formatLatencyPercentile(hist, edges, 99) : "—",
+      n,
+      fail,
+    };
+  }).filter((r) => r.n > 0 || r.fail > 0);
 }
 
 function renderResults(snap) {
@@ -555,7 +563,7 @@ function renderResults(snap) {
       : `<tr><td colspan="2">No finished phases yet</td></tr>`;
   }
 
-  const latSig = latRows.map((r) => `${r.title}\0${r.avg}\0${r.fail}`).join("\n");
+  const latSig = latRows.map((r) => `${r.title}\0${r.avg}\0${r.p95}\0${r.p99}\0${r.fail}`).join("\n");
   if (latBody.dataset.sig !== latSig) {
     latBody.dataset.sig = latSig;
     latBody.innerHTML = latRows.length
@@ -564,11 +572,13 @@ function renderResults(snap) {
             (r) => `<tr>
         <td>${escapeHtml(r.title)}</td>
         <td>${escapeHtml(r.avg)}</td>
+        <td>${escapeHtml(r.p95)}</td>
+        <td>${escapeHtml(r.p99)}</td>
         <td>${r.fail ? escapeHtml(String(r.fail)) : "—"}</td>
       </tr>`
           )
           .join("")
-      : `<tr><td colspan="3">No latency samples yet</td></tr>`;
+      : `<tr><td colspan="5">No latency samples yet</td></tr>`;
   }
 }
 
@@ -593,12 +603,14 @@ function resultsSummaryHTML(snap) {
 
   const latTable = latRows.length
     ? `<table>
-      <thead><tr><th>Operation</th><th>Avg</th><th>Fail</th></tr></thead>
+      <thead><tr><th>Operation</th><th>Avg</th><th>p95</th><th>p99</th><th>Fail</th></tr></thead>
       <tbody>${latRows
         .map(
           (r) => `<tr>
         <td>${escapeHTML(r.title)}</td>
         <td class="mono">${escapeHTML(r.avg)}</td>
+        <td class="mono">${escapeHTML(r.p95)}</td>
+        <td class="mono">${escapeHTML(r.p99)}</td>
         <td class="mono">${r.fail ? escapeHTML(String(r.fail)) : "—"}</td>
       </tr>`
         )
