@@ -489,6 +489,54 @@ function phaseChartEndLabel(span, history, cfg, isBytes, bwFiles) {
   return null;
 }
 
+function formatOpsRate(n) {
+  if (n == null || !(n > 0)) return "—";
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + " M/s";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + " k/s";
+  return Math.round(n) + " /s";
+}
+
+/** Max of `keys` over history samples that fall inside any of `phases`. */
+function maxInPhases(history, spans, phases, keys) {
+  const want = new Set(phases);
+  let max = 0;
+  let any = false;
+  for (const span of spans || []) {
+    if (!want.has(span.phase)) continue;
+    const start = new Date(span.start).getTime();
+    const end = span.end ? new Date(span.end).getTime() : Date.now();
+    for (const pt of history || []) {
+      const t = sampleTime(pt);
+      if (t < start || t > end) continue;
+      for (const key of keys) {
+        const v = Number(pt[key]) || 0;
+        if (v > max) max = v;
+        if (v > 0) any = true;
+      }
+    }
+  }
+  return any ? max : null;
+}
+
+function resultsPerformanceRows(snap) {
+  const history = snap.history || [];
+  const spans = snap.phase_spans || [];
+  const specs = [
+    ["Creation rate", ["create"], ["create_iops", "write_iops"], formatOpsRate],
+    ["Deletion rate", ["delete", "final_delete"], ["delete_iops"], formatOpsRate],
+    ["Write bandwidth", ["write_bw"], ["write_bps"], formatRate],
+    ["Read bandwidth", ["read_bw"], ["read_bps"], formatRate],
+    ["R+W write bandwidth", ["read_write"], ["write_bps"], formatRate],
+    ["R+W read bandwidth", ["read_write"], ["read_bps"], formatRate],
+  ];
+  return specs
+    .map(([title, phases, keys, fmt]) => {
+      const peak = maxInPhases(history, spans, phases, keys);
+      return { title, peak, value: peak == null ? "—" : fmt(peak) };
+    })
+    .filter((r) => r.peak != null && r.peak > 0);
+}
+
 function resultsPhaseRows(snap) {
   const spans = snap.phase_spans || [];
   const cfg = snap.config || {};
@@ -531,16 +579,20 @@ function renderResults(snap) {
   const panel = $("results-panel");
   const phaseBody = $("results-phase-body");
   const latBody = $("results-latency-body");
-  if (!panel || !phaseBody || !latBody) return;
+  const perfBody = $("results-perf-body");
+  if (!panel || !phaseBody || !latBody || !perfBody) return;
 
   const phaseRows = resultsPhaseRows(snap);
   const latRows = resultsLatencyRows(snap);
-  if (!phaseRows.length && !latRows.length) {
+  const perfRows = resultsPerformanceRows(snap);
+  if (!phaseRows.length && !latRows.length && !perfRows.length) {
     panel.hidden = true;
     phaseBody.innerHTML = "";
     latBody.innerHTML = "";
+    perfBody.innerHTML = "";
     phaseBody.dataset.sig = "";
     latBody.dataset.sig = "";
+    perfBody.dataset.sig = "";
     return;
   }
   panel.hidden = false;
@@ -577,12 +629,28 @@ function renderResults(snap) {
           .join("")
       : `<tr><td colspan="5">No latency samples yet</td></tr>`;
   }
+
+  const perfSig = perfRows.map((r) => `${r.title}\0${r.value}`).join("\n");
+  if (perfBody.dataset.sig !== perfSig) {
+    perfBody.dataset.sig = perfSig;
+    perfBody.innerHTML = perfRows.length
+      ? perfRows
+          .map(
+            (r) => `<tr>
+        <td>${escapeHtml(r.title)}</td>
+        <td>${escapeHtml(r.value)}</td>
+      </tr>`
+          )
+          .join("")
+      : `<tr><td colspan="2">No peak rates yet</td></tr>`;
+  }
 }
 
 function resultsSummaryHTML(snap) {
   const phaseRows = resultsPhaseRows(snap);
   const latRows = resultsLatencyRows(snap);
-  if (!phaseRows.length && !latRows.length) return "";
+  const perfRows = resultsPerformanceRows(snap);
+  if (!phaseRows.length && !latRows.length && !perfRows.length) return "";
 
   const phaseTable = phaseRows.length
     ? `<table>
@@ -615,6 +683,20 @@ function resultsSummaryHTML(snap) {
     </table>`
     : "<p class='muted'>No latency averages</p>";
 
+  const perfTable = perfRows.length
+    ? `<table>
+      <thead><tr><th>Metric</th><th>Peak</th></tr></thead>
+      <tbody>${perfRows
+        .map(
+          (r) => `<tr>
+        <td>${escapeHTML(r.title)}</td>
+        <td class="mono">${escapeHTML(r.value)}</td>
+      </tr>`
+        )
+        .join("")}</tbody>
+    </table>`
+    : "<p class='muted'>No peak rates</p>";
+
   return `<h2>Results</h2>
   <div class="grid">
     <div>
@@ -624,6 +706,10 @@ function resultsSummaryHTML(snap) {
     <div>
       <h3>Latency</h3>
       ${latTable}
+    </div>
+    <div>
+      <h3>Performance</h3>
+      ${perfTable}
     </div>
   </div>`;
 }

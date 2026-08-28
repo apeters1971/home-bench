@@ -543,7 +543,7 @@ td.mono { font-family: var(--mono); font-size: 0.8rem; }
 
 .results-grid {
   display: grid;
-  grid-template-columns: 1.4fr 1fr;
+  grid-template-columns: 1fr 1.2fr 1fr;
   gap: 18px 24px;
   margin-top: 12px;
 }
