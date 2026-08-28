@@ -10,6 +10,8 @@ const PHASE_LABELS = {
   read_bw: "Read BW",
   read_write: "Read+Write",
   final_delete: "Final Delete",
+  stopped: "Stopped",
+  idle: "Idle",
 };
 
 // Phase band colors are distinct from the series colors (write=green, read=blue, delete=amber).

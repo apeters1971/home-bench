@@ -221,6 +221,10 @@ func (a *Agent) commandLoop(ctx context.Context) {
 			if err := w.Run(workCtx, cmd); err != nil && err != context.Canceled {
 				log.Printf("phase error: %v", err)
 			}
+			// Stop cancels workCtx; don't clobber "stopped" with idle + the old phase.
+			if workCtx.Err() != nil {
+				continue
+			}
 			a.sendStatus("idle", cmd.Phase, cmd.Percent, "step done", a.ledger.Count())
 		}
 	}
