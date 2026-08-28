@@ -18,17 +18,19 @@ type Agent struct {
 	ControllerURL string
 	Hostname      string
 
-	mu       sync.Mutex
-	conn     *websocket.Conn
-	clientID string
-	prefix   string
-	config   protocol.Config
-	ledger   *FileLedger
-	stats    *Stats
-	worker   *Worker
+	mu              sync.Mutex
+	conn            *websocket.Conn
+	clientID        string
+	prefix          string
+	config          protocol.Config
+	ledger          *FileLedger
+	stats           *Stats
+	worker          *Worker
+	metricsInterval time.Duration
 
 	runCancel context.CancelFunc
 	cmdCh     chan protocol.PhaseCommand
+	intervalCh chan time.Duration
 }
 
 func NewAgent(controllerURL, hostname string) *Agent {
@@ -39,11 +41,13 @@ func NewAgent(controllerURL, hostname string) *Agent {
 	stats := NewStats()
 	ledger := NewFileLedger()
 	return &Agent{
-		ControllerURL: controllerURL,
-		Hostname:      hostname,
-		ledger:        ledger,
-		stats:         stats,
-		cmdCh:         make(chan protocol.PhaseCommand, 8),
+		ControllerURL:   controllerURL,
+		Hostname:        hostname,
+		ledger:          ledger,
+		stats:           stats,
+		cmdCh:           make(chan protocol.PhaseCommand, 8),
+		metricsInterval: protocol.MetricsInterval,
+		intervalCh:      make(chan time.Duration, 4),
 	}
 }
 
@@ -139,6 +143,7 @@ func (a *Agent) session(ctx context.Context, wsURL string) error {
 			a.config = env.Welcome.Config
 			a.worker = NewWorker(a.Hostname, a.prefix, a.ledger, a.stats)
 			a.mu.Unlock()
+			a.setMetricsInterval(env.Welcome.MetricsIntervalSec)
 			log.Printf("registered id=%s prefix=%s", env.Welcome.ClientID, env.Welcome.Prefix)
 			a.sendStatus("registered", protocol.PhaseIdle, 0, "ready", a.ledger.Count())
 
@@ -151,6 +156,9 @@ func (a *Agent) session(ctx context.Context, wsURL string) error {
 				a.mu.Unlock()
 				log.Printf("config updated prefix=%s test=%s", a.prefix, env.Config.TestName)
 			}
+
+		case "metrics_interval":
+			a.setMetricsInterval(env.MetricsIntervalSec)
 
 		case "command":
 			if env.Command == nil {
@@ -247,23 +255,70 @@ func (a *Agent) pingLoop(ctx context.Context, conn *websocket.Conn) {
 	}
 }
 
+func (a *Agent) setMetricsInterval(sec float64) {
+	d := protocol.MetricsInterval
+	if sec > 0 {
+		d = time.Duration(sec * float64(time.Second))
+		if d < protocol.MetricsInterval {
+			d = protocol.MetricsInterval
+		}
+		if d > protocol.MetricsIntervalMax {
+			d = protocol.MetricsIntervalMax
+		}
+	}
+	a.mu.Lock()
+	prev := a.metricsInterval
+	a.metricsInterval = d
+	a.mu.Unlock()
+	if prev == d {
+		return
+	}
+	log.Printf("metrics interval %s", d)
+	select {
+	case a.intervalCh <- d:
+	default:
+		select {
+		case <-a.intervalCh:
+		default:
+		}
+		select {
+		case a.intervalCh <- d:
+		default:
+		}
+	}
+}
+
 func (a *Agent) metricsLoop(ctx context.Context, conn *websocket.Conn) {
-	t := time.NewTicker(protocol.MetricsInterval)
+	a.mu.Lock()
+	interval := a.metricsInterval
+	a.mu.Unlock()
+	if interval <= 0 {
+		interval = protocol.MetricsInterval
+	}
+	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case d := <-a.intervalCh:
+			if d <= 0 {
+				d = protocol.MetricsInterval
+			}
+			t.Reset(d)
+			interval = d
 		case <-t.C:
 			sample := a.stats.SnapshotAndReset()
 			a.mu.Lock()
 			sample.ClientID = a.clientID
+			sample.IntervalSec = a.metricsInterval.Seconds()
 			a.mu.Unlock()
 			if sample.ClientID == "" {
 				continue
 			}
-			// Always send — zeros keep the controller from pruning during quiet
-			// delete/wait gaps and keep the UI history advancing.
+			if sample.IntervalSec <= 0 {
+				sample.IntervalSec = interval.Seconds()
+			}
 			env := protocol.Envelope{Type: "metrics", Metrics: &sample}
 			if err := a.writeJSON(conn, env); err != nil {
 				return

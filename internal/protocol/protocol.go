@@ -32,8 +32,15 @@ const (
 	BandwidthFileSize = 64 * 1024 * 1024 // 64 MiB
 	// CreateFileSize is the size used during create/delete IOPS phases.
 	CreateFileSize = 4096
-	// MetricsInterval is how often clients push observations.
+	// MetricsInterval is the baseline client metrics push period (small fleets).
 	MetricsInterval = time.Second
+	// MetricsTargetAggregateHz keeps total metrics messages/sec roughly constant
+	// as the fleet grows: interval ≈ nClients / MetricsTargetAggregateHz.
+	MetricsTargetAggregateHz = 100
+	// MetricsIntervalMax caps how slow clients report (still usable charts).
+	MetricsIntervalMax = 60 * time.Second
+	// UIClientLimit is how many clients the UI snapshot includes (sorted by hostname).
+	UIClientLimit = 20
 	// HistoryRetention is how long the controller keeps metric samples.
 	HistoryRetention = 60 * time.Minute
 	// DefaultPhaseStepDuration is the default time spent at each 10% ramp step.
@@ -119,6 +126,27 @@ func (c Config) PhaseStepDuration() time.Duration {
 	return time.Duration(c.PhaseStepSeconds * float64(time.Second))
 }
 
+// MetricsIntervalForClients returns how often each client should push metrics
+// so aggregate report rate stays near MetricsTargetAggregateHz.
+func MetricsIntervalForClients(n int) time.Duration {
+	if n < 1 {
+		n = 1
+	}
+	sec := float64(n) / float64(MetricsTargetAggregateHz)
+	d := time.Duration(sec * float64(time.Second))
+	if d < MetricsInterval {
+		d = MetricsInterval
+	}
+	if d > MetricsIntervalMax {
+		d = MetricsIntervalMax
+	}
+	// Whole seconds keep chart buckets aligned.
+	if d < time.Second {
+		return time.Second
+	}
+	return d.Round(time.Second)
+}
+
 // ClientInfo describes a registered client.
 type ClientInfo struct {
 	ID       string    `json:"id"`
@@ -130,7 +158,7 @@ type ClientInfo struct {
 	Selected bool      `json:"selected"` // participates in the next/current run
 }
 
-// MetricSample is one second of observed IO from a client.
+// MetricSample is observed IO from a client since the previous metrics push.
 type MetricSample struct {
 	ClientID   string    `json:"client_id"`
 	Timestamp  time.Time `json:"timestamp"`
@@ -142,6 +170,8 @@ type MetricSample struct {
 	CreateOps  int64     `json:"create_ops"`
 	ReadBytes  int64     `json:"read_bytes"`
 	WriteBytes int64     `json:"write_bytes"`
+	// IntervalSec is the reporting window this sample covers (for rate normalization).
+	IntervalSec float64 `json:"interval_sec,omitempty"`
 	// Latency deltas since the previous metrics push (bucket counts).
 	Latencies LatencySet `json:"latencies"`
 }
@@ -189,6 +219,8 @@ type Envelope struct {
 	Command *PhaseCommand `json:"command,omitempty"`
 	Stop    *StopMsg      `json:"stop,omitempty"`
 	Config  *Config       `json:"config,omitempty"`
+	// MetricsIntervalSec tells clients how often to push metrics (scaled with fleet size).
+	MetricsIntervalSec float64 `json:"metrics_interval_sec,omitempty"`
 }
 
 type RegisterMsg struct {
@@ -197,9 +229,10 @@ type RegisterMsg struct {
 }
 
 type WelcomeMsg struct {
-	ClientID string `json:"client_id"`
-	Prefix   string `json:"prefix"`
-	Config   Config `json:"config"`
+	ClientID           string  `json:"client_id"`
+	Prefix             string  `json:"prefix"`
+	Config             Config  `json:"config"`
+	MetricsIntervalSec float64 `json:"metrics_interval_sec,omitempty"`
 }
 
 type StatusMsg struct {
@@ -238,8 +271,9 @@ type UIState struct {
 	PhaseOrder          []Phase            `json:"phase_order"`
 	StatusText         string             `json:"status_text"`
 	ClientCount        int                `json:"client_count"`
+	ClientsShown       int                `json:"clients_shown"` // len(Clients); capped by UIClientLimit
 	ParticipantCount   int                `json:"participant_count"`
-	SelectedClientIDs  []string           `json:"selected_client_ids"`
+	SelectedAll        bool               `json:"selected_all"` // every connected client is selected
 	ControllerHostname string             `json:"controller_hostname"`
 }
 

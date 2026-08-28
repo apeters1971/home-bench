@@ -315,18 +315,23 @@ function renderClients(clients) {
   const body = $("client-body");
   const meta = $("client-list-meta");
   const running = !!state.snapshot?.running;
-  const n = clients.length;
-  const selected = clients.filter((c) => c.selected).length;
-  meta.textContent =
-    n === 0
-      ? "0 clients"
-      : `${selected} of ${n} selected${n > 10 ? " · scroll for more" : ""}`;
+  const shown = clients.length;
+  const total = state.snapshot?.client_count ?? shown;
+  const selected = state.snapshot?.participant_count ?? clients.filter((c) => c.selected).length;
+  const selectedAll = !!state.snapshot?.selected_all;
+  if (total === 0) {
+    meta.textContent = "0 clients";
+  } else if (shown < total) {
+    meta.textContent = `${selected} of ${total} selected · showing ${shown}`;
+  } else {
+    meta.textContent = `${selected} of ${total} selected`;
+  }
 
   const next = clients
     .map((c) =>
       [c.id, c.hostname, c.prefix, c.status, PHASE_LABELS[c.phase] || c.phase || "", c.selected ? "1" : "0"].join("\0")
     )
-    .join("\n");
+    .join("\n") + `\n#${total}:${selected}:${selectedAll ? 1 : 0}`;
   if (body.dataset.sig === next) {
     updateParticipantControls(running);
     return;
@@ -352,17 +357,17 @@ function renderClients(clients) {
 
   const all = $("select-all-clients");
   if (all) {
-    all.checked = n > 0 && selected === n;
-    all.indeterminate = selected > 0 && selected < n;
+    all.checked = selectedAll;
+    all.indeterminate = selected > 0 && !selectedAll;
   }
   updateParticipantControls(running);
 }
 
-async function setParticipants(ids) {
+async function setParticipants(body) {
   const res = await fetch("/api/participants", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ client_ids: ids }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     alert(await res.text());
@@ -370,12 +375,6 @@ async function setParticipants(ids) {
   }
   const snap = await res.json();
   if (snap) render(snap);
-}
-
-function selectedClientIDsFromDOM() {
-  return Array.from(document.querySelectorAll("#client-body input[type=checkbox]:checked"))
-    .map((cb) => cb.dataset.clientId)
-    .filter(Boolean);
 }
 
 function bindParticipantControls() {
@@ -386,7 +385,10 @@ function bindParticipantControls() {
       const t = e.target;
       if (!(t instanceof HTMLInputElement) || t.type !== "checkbox") return;
       if (state.snapshot?.running) return;
-      setParticipants(selectedClientIDsFromDOM());
+      const id = t.dataset.clientId;
+      if (!id) return;
+      if (t.checked) setParticipants({ add: [id] });
+      else setParticipants({ remove: [id] });
     });
   }
 
@@ -395,9 +397,7 @@ function bindParticipantControls() {
     all.dataset.bound = "1";
     all.addEventListener("change", () => {
       if (state.snapshot?.running) return;
-      const clients = state.snapshot?.clients || [];
-      const ids = all.checked ? clients.map((c) => c.id).filter(Boolean) : [];
-      setParticipants(ids);
+      setParticipants({ mode: all.checked ? "all" : "none" });
     });
   }
 
@@ -406,7 +406,7 @@ function bindParticipantControls() {
     none.dataset.bound = "1";
     none.addEventListener("click", () => {
       if (state.snapshot?.running) return;
-      setParticipants([]);
+      setParticipants({ mode: "none" });
     });
   }
 
@@ -416,12 +416,7 @@ function bindParticipantControls() {
     btnN.addEventListener("click", () => {
       if (state.snapshot?.running) return;
       const n = Math.max(0, Math.floor(Number($("select-n-count")?.value) || 0));
-      const clients = [...(state.snapshot?.clients || [])].sort((a, b) => {
-        const h = String(a.hostname || "").localeCompare(String(b.hostname || ""));
-        if (h !== 0) return h;
-        return String(a.id || "").localeCompare(String(b.id || ""));
-      });
-      setParticipants(clients.slice(0, n).map((c) => c.id).filter(Boolean));
+      setParticipants({ mode: "first_n", n });
     });
   }
 }
@@ -1588,6 +1583,10 @@ function downloadReport() {
         <td>${escapeHTML(PHASE_LABELS[c.phase] || c.phase || "")}</td>
       </tr>`).join("")
     : `<tr><td colspan="4">No clients</td></tr>`;
+  const clientsNote =
+    (snap.clients_shown ?? clients.length) < (snap.client_count ?? clients.length)
+      ? `<p class="sub">Showing ${snap.clients_shown ?? clients.length} of ${snap.client_count} clients in this table.</p>`
+      : "";
 
   const prefixes = (cfg.prefixes || []).map((p) => `<li class="mono">${escapeHTML(p)}</li>`).join("") || "<li>—</li>";
 
@@ -1664,6 +1663,7 @@ function downloadReport() {
   <ul>${prefixes}</ul>
 
   <h2>Clients</h2>
+  ${clientsNote}
   <table>
     <thead><tr><th>Hostname</th><th>Prefix</th><th>Status</th><th>Phase</th></tr></thead>
     <tbody>${clientRows}</tbody>

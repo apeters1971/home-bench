@@ -13,8 +13,12 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const clientSendQueue = 64
+
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	ReadBufferSize:  4096,
+	WriteBufferSize: 4096,
+	CheckOrigin:     func(r *http.Request) bool { return true },
 }
 
 // Server is the central controller HTTP + WebSocket endpoint.
@@ -37,7 +41,9 @@ type Server struct {
 type wsClient struct {
 	id   string
 	conn *websocket.Conn
-	mu   sync.Mutex
+	out  chan []byte
+	done chan struct{}
+	mu   sync.Mutex // serializes WriteMessage (queue + ping/pong)
 }
 
 // uiConn serializes all writes to a browser WebSocket (snapshots + pings).
@@ -78,11 +84,107 @@ func NewServer(webFS fs.FS, configPath string) *Server {
 	return s
 }
 
+func newWSClient(id string, conn *websocket.Conn) *wsClient {
+	c := &wsClient{
+		id:   id,
+		conn: conn,
+		out:  make(chan []byte, clientSendQueue),
+		done: make(chan struct{}),
+	}
+	go c.writeLoop()
+	return c
+}
+
+func (c *wsClient) writeLoop() {
+	for {
+		select {
+		case <-c.done:
+			return
+		case raw := <-c.out:
+			c.mu.Lock()
+			_ = c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			err := c.conn.WriteMessage(websocket.TextMessage, raw)
+			c.mu.Unlock()
+			if err != nil {
+				_ = c.conn.Close()
+				return
+			}
+		}
+	}
+}
+
+func (c *wsClient) stop() {
+	select {
+	case <-c.done:
+	default:
+		close(c.done)
+	}
+}
+
+func (c *wsClient) enqueue(raw []byte) {
+	select {
+	case c.out <- raw:
+		return
+	default:
+	}
+	// Drop oldest queued message to make room for a fresher command.
+	select {
+	case <-c.out:
+	default:
+	}
+	select {
+	case c.out <- raw:
+	default:
+		log.Printf("send queue full for %s — dropping message", c.id)
+	}
+}
+
+func (c *wsClient) send(env protocol.Envelope) {
+	raw, err := json.Marshal(env)
+	if err != nil {
+		return
+	}
+	c.enqueue(raw)
+}
+
+func (c *wsClient) ping() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_ = c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	return c.conn.WriteMessage(websocket.PingMessage, []byte("ping"))
+}
+
 func (s *Server) Broadcast(env protocol.Envelope) {
+	raw, err := json.Marshal(env)
+	if err != nil {
+		return
+	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
+	targets := make([]*wsClient, 0, len(s.clients))
 	for _, c := range s.clients {
-		c.send(env)
+		targets = append(targets, c)
+	}
+	s.mu.RUnlock()
+	for _, c := range targets {
+		c.enqueue(raw)
+	}
+}
+
+func (s *Server) BroadcastTo(ids []string, env protocol.Envelope) {
+	raw, err := json.Marshal(env)
+	if err != nil {
+		return
+	}
+	s.mu.RLock()
+	targets := make([]*wsClient, 0, len(ids))
+	for _, id := range ids {
+		if c := s.clients[id]; c != nil {
+			targets = append(targets, c)
+		}
+	}
+	s.mu.RUnlock()
+	for _, c := range targets {
+		c.enqueue(raw)
 	}
 }
 
@@ -93,22 +195,6 @@ func (s *Server) SendTo(clientID string, env protocol.Envelope) {
 	if c != nil {
 		c.send(env)
 	}
-}
-
-func (c *wsClient) send(env protocol.Envelope) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	_ = c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if err := c.conn.WriteJSON(env); err != nil {
-		log.Printf("send to %s: %v", c.id, err)
-	}
-}
-
-func (c *wsClient) ping() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	_ = c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	return c.conn.WriteMessage(websocket.PingMessage, []byte("ping"))
 }
 
 func (s *Server) Handler() http.Handler {
@@ -134,6 +220,7 @@ func (s *Server) StartBackground() {
 			for _, info := range s.registry.Prune(protocol.ClientStaleAfter) {
 				s.mu.Lock()
 				if c, ok := s.clients[info.ID]; ok {
+					c.stop()
 					_ = c.conn.Close()
 					delete(s.clients, info.ID)
 				}
@@ -142,6 +229,16 @@ func (s *Server) StartBackground() {
 				log.Printf("pruned stale client %s", info.ID)
 			}
 			s.requestUI()
+		}
+	}()
+	// Steady UI refresh while a run is active (metrics no longer poke the UI each sample).
+	go func() {
+		t := time.NewTicker(500 * time.Millisecond)
+		defer t.Stop()
+		for range t.C {
+			if s.orch.IsRunning() {
+				s.requestUI()
+			}
 		}
 	}()
 }
@@ -173,14 +270,12 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleParticipants(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPut, http.MethodPost:
-		var body struct {
-			ClientIDs []string `json:"client_ids"`
-		}
+		var body ParticipantUpdate
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err := s.orch.SetSelectedClients(body.ClientIDs); err != nil {
+		if err := s.orch.UpdateParticipants(body); err != nil {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
@@ -236,6 +331,7 @@ func (s *Server) handleClientWS(w http.ResponseWriter, r *http.Request) {
 				if info, ok := s.registry.Lookup(clientID); ok {
 					host = info.Hostname
 				}
+				cur.stop()
 				delete(s.clients, clientID)
 				s.registry.Remove(clientID)
 				removed = true
@@ -263,7 +359,6 @@ func (s *Server) handleClientWS(w http.ResponseWriter, r *http.Request) {
 		if clientID != "" {
 			s.registry.Touch(clientID)
 		}
-		// Reply with pong using the client's write lock once registered.
 		if wc != nil {
 			wc.mu.Lock()
 			defer wc.mu.Unlock()
@@ -314,15 +409,20 @@ func (s *Server) handleClientWS(w http.ResponseWriter, r *http.Request) {
 			prefix := protocol.SelectPrefix(env.Register.Hostname, cfg.Prefixes)
 			info := s.registry.Upsert(id, env.Register.Hostname, prefix)
 			s.orch.OnClientRegistered(id)
-			wc = &wsClient{id: id, conn: conn}
+			wc = newWSClient(id, conn)
 			s.mu.Lock()
-			// Close any superseded connection for this ID.
 			if old, ok := s.clients[id]; ok && old.conn != conn {
+				old.stop()
 				_ = old.conn.Close()
 			}
 			s.clients[id] = wc
 			s.mu.Unlock()
-			welcome := protocol.WelcomeMsg{ClientID: id, Prefix: prefix, Config: cfg}
+			welcome := protocol.WelcomeMsg{
+				ClientID:           id,
+				Prefix:             prefix,
+				Config:             cfg,
+				MetricsIntervalSec: protocol.MetricsIntervalForClients(s.registry.Count()).Seconds(),
+			}
 			wc.send(protocol.Envelope{Type: "welcome", Welcome: &welcome})
 			log.Printf("client registered: id=%s host=%s prefix=%s", id, info.Hostname, prefix)
 			s.requestUI()
@@ -334,11 +434,9 @@ func (s *Server) handleClientWS(w http.ResponseWriter, r *http.Request) {
 			if env.Metrics.Timestamp.IsZero() {
 				env.Metrics.Timestamp = time.Now().UTC()
 			}
-			s.registry.Touch(env.Metrics.ClientID)
-			// Heartbeats keep the session alive; only record into plots while running.
-			if s.orch.IsRunning() && s.orch.IsParticipant(env.Metrics.ClientID) {
+			// Liveness comes from WS ping/pong; avoid a registry write lock per sample.
+			if s.orch.IsParticipant(env.Metrics.ClientID) {
 				s.metrics.Add(*env.Metrics)
-				s.requestUI()
 			}
 
 		case "heartbeat":
@@ -453,7 +551,6 @@ func (s *Server) flushUI() {
 
 		s.uiMu.Lock()
 		if s.uiPending {
-			// Another update arrived while we were writing; loop again after a short pause.
 			s.uiMu.Unlock()
 			time.Sleep(500 * time.Millisecond)
 			continue
@@ -467,6 +564,5 @@ func (s *Server) flushUI() {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
 	_ = enc.Encode(v)
 }
