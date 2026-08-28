@@ -1575,18 +1575,26 @@ function downloadReport() {
   const title = `Homebench · ${cfg.test_name || "report"}`;
   const filenameHint = reportBasename();
 
-  const clientRows = clients.length
-    ? clients.map((c) => `<tr>
+  const totalClients = snap.client_count ?? clients.length;
+  const participants = snap.participant_count ?? clients.filter((c) => c.selected).length;
+  const listClients = totalClients > 20 ? [] : clients;
+  const clientRows = listClients.length
+    ? listClients.map((c) => `<tr>
         <td>${escapeHTML(c.hostname)}</td>
         <td class="mono">${escapeHTML(c.prefix)}</td>
         <td>${escapeHTML(c.status)}</td>
         <td>${escapeHTML(PHASE_LABELS[c.phase] || c.phase || "")}</td>
       </tr>`).join("")
-    : `<tr><td colspan="4">No clients</td></tr>`;
-  const clientsNote =
-    (snap.clients_shown ?? clients.length) < (snap.client_count ?? clients.length)
-      ? `<p class="sub">Showing ${snap.clients_shown ?? clients.length} of ${snap.client_count} clients in this table.</p>`
-      : "";
+    : "";
+  const clientsSection =
+    totalClients > 20
+      ? `<p class="sub">${totalClients} clients · ${participants} participants (names omitted above 20).</p>`
+      : clientRows
+        ? `<table>
+    <thead><tr><th>Hostname</th><th>Prefix</th><th>Status</th><th>Phase</th></tr></thead>
+    <tbody>${clientRows}</tbody>
+  </table>`
+        : `<p class="sub">No clients</p>`;
 
   const prefixes = (cfg.prefixes || []).map((p) => `<li class="mono">${escapeHTML(p)}</li>`).join("") || "<li>—</li>";
 
@@ -1663,11 +1671,7 @@ function downloadReport() {
   <ul>${prefixes}</ul>
 
   <h2>Clients</h2>
-  ${clientsNote}
-  <table>
-    <thead><tr><th>Hostname</th><th>Prefix</th><th>Status</th><th>Phase</th></tr></thead>
-    <tbody>${clientRows}</tbody>
-  </table>
+  ${clientsSection}
 
   <h2>IOPS</h2>
   <div class="chart"><img src="${canvasPNG("chart-iops")}" alt="IOPS chart" /></div>
