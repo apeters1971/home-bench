@@ -325,7 +325,15 @@ func (a *Agent) metricsLoop(ctx context.Context, conn *websocket.Conn) {
 			}
 			env := protocol.Envelope{Type: "metrics", Metrics: &sample}
 			if err := a.writeJSON(conn, env); err != nil {
-				return
+				// Don't kill the metrics loop on a transient write timeout —
+				// otherwise charts freeze for the rest of the run while the
+				// session is otherwise still alive (common at phase boundaries).
+				log.Printf("metrics write: %v", err)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(time.Second):
+				}
 			}
 		}
 	}

@@ -434,8 +434,14 @@ func (s *Server) handleClientWS(w http.ResponseWriter, r *http.Request) {
 			if env.Metrics.Timestamp.IsZero() {
 				env.Metrics.Timestamp = time.Now().UTC()
 			}
-			// Liveness comes from WS ping/pong; avoid a registry write lock per sample.
-			if s.orch.IsParticipant(env.Metrics.ClientID) {
+			// Prefer the connection identity; samples can omit or stale ClientID.
+			id := clientID
+			if id == "" {
+				id = env.Metrics.ClientID
+			} else {
+				env.Metrics.ClientID = id
+			}
+			if id != "" && s.orch.IsParticipant(id) {
 				s.metrics.Add(*env.Metrics)
 			}
 

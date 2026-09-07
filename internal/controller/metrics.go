@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -20,9 +21,8 @@ type MetricsStore struct {
 	buckets   map[int64]*bucket
 	latencies protocol.LatencySet
 
-	in     chan protocol.MetricSample
-	quit   chan struct{}
-	closed sync.Once
+	in   chan protocol.MetricSample
+	quit chan struct{}
 }
 
 type bucket struct {
@@ -59,7 +59,11 @@ func (m *MetricsStore) loop() {
 		case <-flush.C:
 			m.mu.Lock()
 			if m.recording {
-				m.flushClosed(time.Now().Unix())
+				now := time.Now().Unix()
+				// Keep the timeline advancing even when clients report sparsely
+				// (scaled metrics intervals) or briefly stall between phases.
+				m.ensureSecondsThrough(now)
+				m.flushClosed(now)
 				m.trim()
 			}
 			m.mu.Unlock()
@@ -107,50 +111,73 @@ func (m *MetricsStore) apply(sample protocol.MetricSample) {
 		return
 	}
 
-	// Normalize multi-second report windows to per-second rates and spread
-	// them across the covered seconds so chart magnitudes stay correct.
+	// Normalize multi-second report windows to per-second rates. Credit only
+	// the current second — past buckets may already be flushed into history.
 	scale := sample.IntervalSec
 	if scale < 1 {
 		scale = 1
 	}
-	nSec := int(scale + 0.5)
-	if nSec < 1 {
-		nSec = 1
+	sec := sample.Timestamp.Unix()
+	if sec <= 0 {
+		sec = time.Now().Unix()
 	}
-	readOps := float64(sample.ReadOps) / scale
-	writeOps := float64(sample.WriteOps) / scale
-	createOps := float64(sample.CreateOps) / scale
-	deleteOps := float64(sample.DeleteOps) / scale
-	readBytes := float64(sample.ReadBytes) / scale
-	writeBytes := float64(sample.WriteBytes) / scale
-
-	end := sample.Timestamp.Unix()
-	for i := 0; i < nSec; i++ {
-		sec := end - int64(i)
-		b, ok := m.buckets[sec]
-		if !ok {
-			b = &bucket{ts: time.Unix(sec, 0).UTC()}
-			m.buckets[sec] = b
-		}
-		b.readOps += readOps
-		b.writeOps += writeOps
-		b.createOps += createOps
-		b.deleteOps += deleteOps
-		b.readBytes += readBytes
-		b.writeBytes += writeBytes
+	b, ok := m.buckets[sec]
+	if !ok {
+		b = &bucket{ts: time.Unix(sec, 0).UTC()}
+		m.buckets[sec] = b
 	}
+	b.readOps += float64(sample.ReadOps) / scale
+	b.writeOps += float64(sample.WriteOps) / scale
+	b.createOps += float64(sample.CreateOps) / scale
+	b.deleteOps += float64(sample.DeleteOps) / scale
+	b.readBytes += float64(sample.ReadBytes) / scale
+	b.writeBytes += float64(sample.WriteBytes) / scale
 	m.latencies.Merge(sample.Latencies)
 
-	m.flushClosed(end)
+	m.flushClosed(sec)
 	m.trim()
 }
 
-// flushClosed promotes buckets older than currentSec into history.
-func (m *MetricsStore) flushClosed(currentSec int64) {
-	for sec, b := range m.buckets {
-		if sec >= currentSec {
+// ensureSecondsThrough creates empty buckets for every second after the last
+// history point through now, so UI charts keep a continuous time axis.
+func (m *MetricsStore) ensureSecondsThrough(now int64) {
+	start := now
+	if n := len(m.history); n > 0 {
+		start = m.history[n-1].Timestamp.Unix() + 1
+	}
+	if start > now {
+		return
+	}
+	// Bound catch-up so a long pause cannot create a huge burst of empty points.
+	if now-start > 120 {
+		start = now - 120
+	}
+	for sec := start; sec <= now; sec++ {
+		if _, ok := m.buckets[sec]; ok {
 			continue
 		}
+		m.buckets[sec] = &bucket{ts: time.Unix(sec, 0).UTC()}
+	}
+}
+
+// flushClosed promotes buckets older than currentSec into history in time order.
+func (m *MetricsStore) flushClosed(currentSec int64) {
+	type item struct {
+		sec int64
+		b   *bucket
+	}
+	due := make([]item, 0, len(m.buckets))
+	for sec, b := range m.buckets {
+		if sec < currentSec {
+			due = append(due, item{sec: sec, b: b})
+		}
+	}
+	if len(due) == 0 {
+		return
+	}
+	sort.Slice(due, func(i, j int) bool { return due[i].sec < due[j].sec })
+	for _, it := range due {
+		b := it.b
 		m.history = append(m.history, protocol.AggregatedSample{
 			Timestamp:  b.ts,
 			ReadIOPS:   b.readOps,
@@ -160,7 +187,7 @@ func (m *MetricsStore) flushClosed(currentSec int64) {
 			CreateIOPS: b.createOps,
 			DeleteIOPS: b.deleteOps,
 		})
-		delete(m.buckets, sec)
+		delete(m.buckets, it.sec)
 	}
 }
 
