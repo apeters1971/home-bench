@@ -29,17 +29,42 @@ func (r *Registry) Upsert(id, hostname, prefix string) protocol.ClientInfo {
 	defer r.mu.Unlock()
 	now := time.Now()
 	info := protocol.ClientInfo{
-		ID:       id,
-		Hostname: hostname,
-		Prefix:   prefix,
-		LastSeen: now,
-		Status:   "registered",
-		Phase:    protocol.PhaseIdle,
+		ID:          id,
+		Hostname:    hostname,
+		Prefix:      prefix,
+		ConnectedAt: now,
+		LastSeen:    now,
+		Status:      "registered",
+		Phase:       protocol.PhaseIdle,
 	}
 	e := &regEntry{info: info}
 	e.lastSeen.Store(now.UnixNano())
 	r.clients[id] = e
 	return info
+}
+
+// ConnectionSpan is the time from the earliest connected client to the latest.
+// With fewer than two clients the span is zero.
+func (r *Registry) ConnectionSpan() time.Duration {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var first, last time.Time
+	for _, e := range r.clients {
+		t := e.info.ConnectedAt
+		if t.IsZero() {
+			continue
+		}
+		if first.IsZero() || t.Before(first) {
+			first = t
+		}
+		if last.IsZero() || t.After(last) {
+			last = t
+		}
+	}
+	if first.IsZero() || last.IsZero() || !last.After(first) {
+		return 0
+	}
+	return last.Sub(first)
 }
 
 func (r *Registry) Touch(id string) {

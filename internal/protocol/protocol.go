@@ -149,13 +149,14 @@ func MetricsIntervalForClients(n int) time.Duration {
 
 // ClientInfo describes a registered client.
 type ClientInfo struct {
-	ID       string    `json:"id"`
-	Hostname string    `json:"hostname"`
-	Prefix   string    `json:"prefix"`
-	LastSeen time.Time `json:"last_seen"`
-	Status   string    `json:"status"`
-	Phase    Phase     `json:"phase"`
-	Selected bool      `json:"selected"` // participates in the next/current run
+	ID          string    `json:"id"`
+	Hostname    string    `json:"hostname"`
+	Prefix      string    `json:"prefix"`
+	ConnectedAt time.Time `json:"connected_at"` // when this WS session registered
+	LastSeen    time.Time `json:"last_seen"`
+	Status      string    `json:"status"`
+	Phase       Phase     `json:"phase"`
+	Selected    bool      `json:"selected"` // participates in the next/current run
 }
 
 // MetricSample is observed IO from a client since the previous metrics push.
@@ -264,6 +265,8 @@ type UIState struct {
 	Percent             int                `json:"percent"`
 	StartedAt           *time.Time         `json:"started_at,omitempty"`
 	ElapsedSec          float64            `json:"elapsed_sec"`
+	// StartupSec is max(connected_at)-min(connected_at) across currently connected clients.
+	StartupSec         float64            `json:"startup_sec"`
 	History             []AggregatedSample `json:"history"`
 	Latencies           LatencySet         `json:"latencies"`
 	LatencyEdgesUs      []float64          `json:"latency_edges_us"`

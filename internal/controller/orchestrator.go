@@ -169,6 +169,7 @@ func (o *Orchestrator) Snapshot() protocol.UIState {
 		Percent:            o.percent,
 		StartedAt:          o.startedAt,
 		ElapsedSec:         elapsed,
+		StartupSec:         o.registry.ConnectionSpan().Seconds(),
 		History:            o.metrics.History(),
 		Latencies:          o.metrics.Latencies(),
 		LatencyEdgesUs:     append([]float64(nil), protocol.LatencyBucketEdgesUs...),

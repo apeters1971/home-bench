@@ -254,6 +254,7 @@ function render(snap) {
     }
   }
 
+  $("startup").textContent = formatElapsed(snap.startup_sec);
   $("elapsed").textContent = formatElapsed(snap.elapsed_sec);
   updateEstimated(snap);
   const totalClients = snap.client_count ?? snap.clients?.length ?? 0;
