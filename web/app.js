@@ -117,12 +117,27 @@ function addMeasuredOrApprox(spans, phase, fallbackSec, tips) {
 // Planned wall time for a full run (ramps are fixed; software/git/untar vary).
 function estimatedRuntime(cfg, spans) {
   const step = Math.max(1, Number(cfg?.phase_step_seconds) || 30);
-  // create(10) + delete(10+1) + write(10) + read(10) + r+w(10) + final(10+1)
-  let sec = (10 + 11 + 10 + 10 + 10 + 11) * step;
-  let approx = false;
-  const tips = [`IO ramps: ${62 * step}s (${step}s × 62 steps)`];
+  const disabled = new Set(cfg?.disabled_phases || []);
+  const on = (phase) => !disabled.has(phase);
 
-  if (softwareEnabled(cfg)) {
+  let sec = 0;
+  let approx = false;
+  const tips = [];
+
+  const addRamp = (label, steps) => {
+    const s = steps * step;
+    sec += s;
+    tips.push(`${label}: ${s}s`);
+  };
+
+  if (on("create")) addRamp("Create", 10);
+  if (on("delete")) addRamp("Delete", 11);
+  if (on("write_bw")) addRamp("Write BW", 10);
+  if (on("read_bw")) addRamp("Read BW", 10);
+  if (on("read_write")) addRamp("Read+Write", 10);
+  if (on("final_delete")) addRamp("Final Delete", 11);
+
+  if (softwareEnabled(cfg) && on("software_cold")) {
     const unpack = addMeasuredOrApprox(spans, "software_unpack", 0, tips);
     sec += unpack.sec;
     approx = approx || unpack.approx;
@@ -139,15 +154,19 @@ function estimatedRuntime(cfg, spans) {
       }
     }
   }
-  if (gitCloneEnabled(cfg)) {
+  if (gitCloneEnabled(cfg) && on("git_clone")) {
     const g = addMeasuredOrApprox(spans, "git_clone", 0, tips);
     sec += g.sec;
     approx = approx || g.approx;
   }
-  if (untarEnabled(cfg)) {
+  if (untarEnabled(cfg) && on("untar")) {
     const u = addMeasuredOrApprox(spans, "untar", 0, tips);
     sec += u.sec;
     approx = approx || u.approx;
+  }
+
+  if (!tips.length) {
+    tips.push("No phases enabled");
   }
 
   return { sec, approx, title: tips.join(" · ") };
@@ -185,9 +204,43 @@ function buildPhaseRow() {
     btn.className = "phase-btn";
     btn.dataset.phase = p;
     btn.textContent = PHASE_LABELS[p] || p;
-    btn.disabled = true;
+    btn.title = "Click to enable/disable for the next run";
+    btn.addEventListener("click", () => togglePhase(p));
     row.appendChild(btn);
   }
+  syncPhaseButtons();
+}
+
+function syncPhaseButtons() {
+  const snap = state.snapshot || {};
+  const running = !!snap.running;
+  const disabled = new Set(snap.config?.disabled_phases || []);
+  document.querySelectorAll(".phase-btn").forEach((btn) => {
+    const phase = btn.dataset.phase;
+    const skipped = disabled.has(phase);
+    btn.classList.toggle("skipped", skipped);
+    btn.classList.toggle("active", running && !skipped && btn.dataset.phase === snap.phase);
+    btn.disabled = running;
+    btn.setAttribute("aria-pressed", skipped ? "false" : "true");
+  });
+}
+
+async function togglePhase(phase) {
+  if (state.snapshot?.running) return;
+  const disabled = new Set(state.snapshot?.config?.disabled_phases || []);
+  const enabled = disabled.has(phase);
+  const res = await fetch("/api/phases", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ phase, enabled }),
+  });
+  if (!res.ok) {
+    alert(await res.text());
+    return;
+  }
+  try {
+    render(await res.json());
+  } catch (_) {}
 }
 
 function applyConfigForm(cfg) {
@@ -280,9 +333,7 @@ function render(snap) {
   $("btn-stop").disabled = !snap.running;
   updateParticipantControls(!!snap.running);
 
-  document.querySelectorAll(".phase-btn").forEach((btn) => {
-    btn.classList.toggle("active", snap.running && btn.dataset.phase === snap.phase);
-  });
+  syncPhaseButtons();
 
   renderClients(snap.clients || []);
   drawCharts(snap.history || []);
@@ -1603,6 +1654,7 @@ async function saveConfig(ev) {
     startup_command: form.startup_command.value.trim(),
     git_clone_url: form.git_clone_url.value.trim(),
     untar_url: form.untar_url.value.trim(),
+    disabled_phases: state.snapshot?.config?.disabled_phases || [],
   };
   const res = await fetch("/api/config", {
     method: "PUT",

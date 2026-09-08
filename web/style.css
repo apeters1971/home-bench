@@ -163,7 +163,13 @@ main {
   border-radius: 999px;
   padding: 8px 14px;
   font: 500 0.85rem var(--font);
-  transition: transform 160ms ease, background 160ms ease, color 160ms ease, border-color 160ms ease;
+  cursor: pointer;
+  transition: transform 160ms ease, background 160ms ease, color 160ms ease, border-color 160ms ease, opacity 160ms ease;
+}
+
+.phase-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 35%, white);
+  color: var(--ink);
 }
 
 .phase-btn.active {
@@ -172,6 +178,17 @@ main {
   color: var(--accent);
   transform: translateY(-1px);
   box-shadow: 0 0 0 3px rgba(15, 122, 95, 0.12);
+}
+
+.phase-btn.skipped {
+  opacity: 0.45;
+  text-decoration: line-through;
+  background: transparent;
+  color: var(--muted);
+}
+
+.phase-btn:disabled {
+  cursor: default;
 }
 
 .actions {

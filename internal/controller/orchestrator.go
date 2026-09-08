@@ -72,6 +72,7 @@ func NewOrchestrator(reg *Registry, metrics *MetricsStore, bc Broadcaster, confi
 			log.Printf("config load %s: %v — using defaults", configPath, err)
 		}
 	}
+	cfg.NormalizeDisabledPhases()
 	hostname, _ := os.Hostname()
 	return &Orchestrator{
 		cfg:         cfg,
@@ -115,6 +116,7 @@ func (o *Orchestrator) SetConfig(cfg protocol.Config) error {
 	if strings.TrimSpace(cfg.PackageURL) == "" {
 		cfg.PackageURL = protocol.DefaultPackageURL
 	}
+	cfg.NormalizeDisabledPhases()
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.running {
@@ -122,6 +124,59 @@ func (o *Orchestrator) SetConfig(cfg protocol.Config) error {
 	}
 	o.cfg = cfg
 	o.registry.ReassignPrefixes(cfg.Prefixes)
+	o.broadcast.Broadcast(protocol.Envelope{Type: "config", Config: &cfg})
+	if o.configPath != "" {
+		if err := SaveConfigFile(o.configPath, cfg); err != nil {
+			log.Printf("config save %s: %v", o.configPath, err)
+		}
+	}
+	return nil
+}
+
+// SetPhaseEnabled enables or disables a phase (and its toggle group) for the next run.
+func (o *Orchestrator) SetPhaseEnabled(phase protocol.Phase, enabled bool) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.running {
+		return fmt.Errorf("cannot change phases while running")
+	}
+	cfg := o.cfg
+	group := protocol.PhaseToggleGroup(phase)
+	inPlan := false
+	for _, p := range protocol.EffectivePhaseOrder(cfg) {
+		for _, g := range group {
+			if p == g {
+				inPlan = true
+				break
+			}
+		}
+	}
+	if !inPlan {
+		return fmt.Errorf("phase %s is not in the current plan", phase)
+	}
+
+	disabled := make(map[protocol.Phase]struct{}, len(cfg.DisabledPhases))
+	for _, d := range cfg.DisabledPhases {
+		disabled[d] = struct{}{}
+	}
+	for _, g := range group {
+		if enabled {
+			delete(disabled, g)
+		} else {
+			disabled[g] = struct{}{}
+		}
+	}
+	cfg.DisabledPhases = cfg.DisabledPhases[:0]
+	for _, p := range protocol.EffectivePhaseOrder(cfg) {
+		if _, ok := disabled[p]; ok {
+			cfg.DisabledPhases = append(cfg.DisabledPhases, p)
+		}
+	}
+	cfg.NormalizeDisabledPhases()
+	if len(protocol.ActivePhaseOrder(cfg)) == 0 {
+		return fmt.Errorf("at least one phase must remain enabled")
+	}
+	o.cfg = cfg
 	o.broadcast.Broadcast(protocol.Envelope{Type: "config", Config: &cfg})
 	if o.configPath != "" {
 		if err := SaveConfigFile(o.configPath, cfg); err != nil {
@@ -336,8 +391,13 @@ func (o *Orchestrator) Start() error {
 		o.mu.Unlock()
 		return fmt.Errorf("no clients selected")
 	}
-	n := len(participants)
 	cfg := o.cfg
+	active := protocol.ActivePhaseOrder(cfg)
+	if len(active) == 0 {
+		o.mu.Unlock()
+		return fmt.Errorf("no phases enabled")
+	}
+	n := len(participants)
 	ctx, cancel := context.WithCancel(context.Background())
 	o.cancel = cancel
 	o.running = true
@@ -352,11 +412,11 @@ func (o *Orchestrator) Start() error {
 	now := time.Now()
 	o.startedAt = &now
 	o.elapsedSec = 0
-	o.phase = protocol.PhaseCreate
+	o.phase = active[0]
 	o.percent = 0
 	o.filesCreated = 0
 	o.phaseSpans = nil
-	o.statusText = fmt.Sprintf("Starting create phase (%d clients)", n)
+	o.statusText = fmt.Sprintf("Starting %s (%d clients)", protocol.PhaseLabel(active[0]), n)
 	interval := o.metricsInterval
 	o.mu.Unlock()
 
@@ -484,12 +544,16 @@ func (o *Orchestrator) run(ctx context.Context, cfg protocol.Config, nClients in
 	readBW := o.perClient(cfg.FileReadBandwidth, nClients)
 	step := cfg.PhaseStepDuration()
 
-	log.Printf("orchestrator: start with %d clients step=%s create=%.1f/s delete=%.1f/s write=%.0f B/s read=%.0f B/s software=%v git=%v untar=%v",
-		nClients, step, createRate, deleteRate, writeBW, readBW, cfg.SoftwareEnabled(), cfg.GitCloneEnabled(), cfg.UntarEnabled())
+	log.Printf("orchestrator: start with %d clients step=%s create=%.1f/s delete=%.1f/s write=%.0f B/s read=%.0f B/s software=%v git=%v untar=%v disabled=%v",
+		nClients, step, createRate, deleteRate, writeBW, readBW, cfg.SoftwareEnabled(), cfg.GitCloneEnabled(), cfg.UntarEnabled(), cfg.DisabledPhases)
+
+	runSoftware := cfg.SoftwareEnabled() && cfg.PhaseSelected(protocol.PhaseSoftwareCold)
+	runGit := cfg.GitCloneEnabled() && cfg.PhaseSelected(protocol.PhaseGitClone)
+	runUntar := cfg.UntarEnabled() && cfg.PhaseSelected(protocol.PhaseUntar)
 
 	// Optional: controller unpacks package once into each <prefix>/<test>/software,
 	// then clients run cold + warm startup from that shared tree.
-	if cfg.SoftwareEnabled() {
+	if runSoftware {
 		if err := o.runControllerUnpack(ctx); err != nil {
 			log.Printf("orchestrator: software unpack failed: %v", err)
 			return
@@ -502,7 +566,7 @@ func (o *Orchestrator) run(ctx context.Context, cfg protocol.Config, nClients in
 		}
 		// Clear the unpacked package tree before git/untar reuse software/, or
 		// async if nothing else needs that directory.
-		if cfg.GitCloneEnabled() || cfg.UntarEnabled() {
+		if runGit || runUntar {
 			o.cleanupSoftware(cfg)
 		} else {
 			o.cleanupSoftwareAsync(cfg)
@@ -510,7 +574,7 @@ func (o *Orchestrator) run(ctx context.Context, cfg protocol.Config, nClients in
 	}
 
 	// Optional: controller prepares a shared git bundle once, then clients clone it.
-	if cfg.GitCloneEnabled() {
+	if runGit {
 		if err := o.runControllerGitBundle(ctx); err != nil {
 			log.Printf("orchestrator: git bundle prep failed: %v", err)
 			return
@@ -520,7 +584,7 @@ func (o *Orchestrator) run(ctx context.Context, cfg protocol.Config, nClients in
 		}
 	}
 	// Optional: controller downloads the untar archive once, then clients extract it.
-	if cfg.UntarEnabled() {
+	if runUntar {
 		if err := o.runControllerUntarArchive(ctx); err != nil {
 			log.Printf("orchestrator: untar archive prep failed: %v", err)
 			return
@@ -531,44 +595,56 @@ func (o *Orchestrator) run(ctx context.Context, cfg protocol.Config, nClients in
 	}
 
 	// Drop shared git/untar artifacts under software/ once clients are done.
-	if cfg.GitCloneEnabled() || cfg.UntarEnabled() {
+	if runGit || runUntar {
 		o.cleanupSoftwareAsync(cfg)
 	}
 
 	// 1) Create ramp
-	if err := o.runRamp(ctx, protocol.PhaseCreate, createRate, protocol.CreateFileSize, step); err != nil {
-		return
+	if cfg.PhaseSelected(protocol.PhaseCreate) {
+		if err := o.runRamp(ctx, protocol.PhaseCreate, createRate, protocol.CreateFileSize, step); err != nil {
+			return
+		}
 	}
 
 	// 2) Delete ramp (full ladder + extra 100% sweep for leftovers)
-	if err := o.runRamp(ctx, protocol.PhaseDelete, deleteRate, 0, step); err != nil {
-		return
-	}
-	if err := o.sendAndWait(ctx, protocol.PhaseDelete, 100, deleteRate, 0, 0, step); err != nil {
-		return
+	if cfg.PhaseSelected(protocol.PhaseDelete) {
+		if err := o.runRamp(ctx, protocol.PhaseDelete, deleteRate, 0, step); err != nil {
+			return
+		}
+		if err := o.sendAndWait(ctx, protocol.PhaseDelete, 100, deleteRate, 0, 0, step); err != nil {
+			return
+		}
 	}
 
 	// 3) Write bandwidth
-	if err := o.runRamp(ctx, protocol.PhaseWriteBW, writeBW, protocol.BandwidthFileSize, step); err != nil {
-		return
+	if cfg.PhaseSelected(protocol.PhaseWriteBW) {
+		if err := o.runRamp(ctx, protocol.PhaseWriteBW, writeBW, protocol.BandwidthFileSize, step); err != nil {
+			return
+		}
 	}
 
 	// 4) Read bandwidth
-	if err := o.runRamp(ctx, protocol.PhaseReadBW, readBW, protocol.BandwidthFileSize, step); err != nil {
-		return
+	if cfg.PhaseSelected(protocol.PhaseReadBW) {
+		if err := o.runRamp(ctx, protocol.PhaseReadBW, readBW, protocol.BandwidthFileSize, step); err != nil {
+			return
+		}
 	}
 
 	// 5) Overlapped read+write at the same downscaled ramp targets
-	if err := o.runRamp2(ctx, protocol.PhaseReadWrite, writeBW, readBW, protocol.BandwidthFileSize, step); err != nil {
-		return
+	if cfg.PhaseSelected(protocol.PhaseReadWrite) {
+		if err := o.runRamp2(ctx, protocol.PhaseReadWrite, writeBW, readBW, protocol.BandwidthFileSize, step); err != nil {
+			return
+		}
 	}
 
 	// 6) Final delete (paced ramp), then forced wipe of anything left past the window.
-	if err := o.runRamp(ctx, protocol.PhaseFinalDelete, deleteRate, 0, step); err != nil {
-		return
-	}
-	if err := o.sendFinalCleanup(ctx); err != nil {
-		return
+	if cfg.PhaseSelected(protocol.PhaseFinalDelete) {
+		if err := o.runRamp(ctx, protocol.PhaseFinalDelete, deleteRate, 0, step); err != nil {
+			return
+		}
+		if err := o.sendFinalCleanup(ctx); err != nil {
+			return
+		}
 	}
 }
 

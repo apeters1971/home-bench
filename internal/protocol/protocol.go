@@ -84,6 +84,9 @@ type Config struct {
 	StartupCommand     string   `json:"startup_command"`      // shell command run from <prefix>/<test>/software
 	GitCloneURL        string   `json:"git_clone_url"`        // optional; controller bundles once, clients clone from software/
 	UntarURL           string   `json:"untar_url"`            // optional; controller downloads once, clients tar xvf from software/
+	// DisabledPhases lists phases skipped for the next run (UI phase-button toggles).
+	// Software unpack/cold/warm and create/delete are always stored as groups.
+	DisabledPhases []Phase `json:"disabled_phases,omitempty"`
 }
 
 // DefaultConfig returns sensible starting values.
@@ -116,6 +119,76 @@ func (c Config) GitCloneEnabled() bool {
 // UntarEnabled is true when an untar archive URL is configured.
 func (c Config) UntarEnabled() bool {
 	return strings.TrimSpace(c.UntarURL) != ""
+}
+
+// PhaseToggleGroup returns the phases that toggle together in the UI.
+func PhaseToggleGroup(p Phase) []Phase {
+	switch p {
+	case PhaseSoftwareUnpack, PhaseSoftwareCold, PhaseSoftwareWarm:
+		return []Phase{PhaseSoftwareUnpack, PhaseSoftwareCold, PhaseSoftwareWarm}
+	case PhaseCreate, PhaseDelete:
+		return []Phase{PhaseCreate, PhaseDelete}
+	default:
+		return []Phase{p}
+	}
+}
+
+// PhaseDisabled reports whether p is listed in DisabledPhases.
+func (c Config) PhaseDisabled(p Phase) bool {
+	for _, d := range c.DisabledPhases {
+		if d == p {
+			return true
+		}
+	}
+	return false
+}
+
+// PhaseSelected is true when the phase is in the configured plan and not disabled.
+func (c Config) PhaseSelected(p Phase) bool {
+	for _, x := range EffectivePhaseOrder(c) {
+		if x == p {
+			return !c.PhaseDisabled(p)
+		}
+	}
+	return false
+}
+
+// NormalizeDisabledPhases drops unknown entries and expands toggle groups.
+func (c *Config) NormalizeDisabledPhases() {
+	if c == nil {
+		return
+	}
+	allowed := make(map[Phase]struct{})
+	for _, p := range EffectivePhaseOrder(*c) {
+		allowed[p] = struct{}{}
+	}
+	seen := make(map[Phase]struct{})
+	out := make([]Phase, 0, len(c.DisabledPhases))
+	for _, p := range c.DisabledPhases {
+		for _, g := range PhaseToggleGroup(p) {
+			if _, ok := allowed[g]; !ok {
+				continue
+			}
+			if _, dup := seen[g]; dup {
+				continue
+			}
+			seen[g] = struct{}{}
+			out = append(out, g)
+		}
+	}
+	c.DisabledPhases = out
+}
+
+// ActivePhaseOrder is EffectivePhaseOrder minus DisabledPhases.
+func ActivePhaseOrder(cfg Config) []Phase {
+	cfg.NormalizeDisabledPhases()
+	out := make([]Phase, 0, len(EffectivePhaseOrder(cfg)))
+	for _, p := range EffectivePhaseOrder(cfg) {
+		if !cfg.PhaseDisabled(p) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // PhaseStepDuration returns the configured ramp-step length.

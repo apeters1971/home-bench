@@ -204,6 +204,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/participants", s.handleParticipants)
 	mux.HandleFunc("/api/start", s.handleStart)
 	mux.HandleFunc("/api/stop", s.handleStop)
+	mux.HandleFunc("/api/phases", s.handlePhases)
 	mux.HandleFunc("/ws/client", s.handleClientWS)
 	mux.HandleFunc("/ws/ui", s.handleUIWS)
 	if s.webFS != nil {
@@ -307,6 +308,31 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 	s.orch.Stop()
 	s.requestUI()
 	writeJSON(w, map[string]any{"ok": true})
+}
+
+func (s *Server) handlePhases(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodPut {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Phase   protocol.Phase `json:"phase"`
+		Enabled bool           `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if body.Phase == "" {
+		http.Error(w, "phase is required", http.StatusBadRequest)
+		return
+	}
+	if err := s.orch.SetPhaseEnabled(body.Phase, body.Enabled); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	s.requestUI()
+	writeJSON(w, s.orch.Snapshot())
 }
 
 func (s *Server) handleClientWS(w http.ResponseWriter, r *http.Request) {
