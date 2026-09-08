@@ -172,6 +172,7 @@ func (o *Orchestrator) Snapshot() protocol.UIState {
 		History:            o.metrics.History(),
 		Latencies:          o.metrics.Latencies(),
 		LatencyEdgesUs:     append([]float64(nil), protocol.LatencyBucketEdgesUs...),
+		LatencyLongEdgesUs: append([]float64(nil), protocol.LatencyLongBucketEdgesUs...),
 		PhaseSpans:         spans,
 		PhaseOrder:         protocol.EffectivePhaseOrder(o.cfg),
 		StatusText:         o.statusText,

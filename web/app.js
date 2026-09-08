@@ -477,6 +477,20 @@ const LATENCY_RESULT_SPECS = [
   ["Untar", "untar"],
 ];
 
+const LONG_LATENCY_KEYS = new Set([
+  "startup_cold",
+  "startup_warm",
+  "git_clone",
+  "untar",
+]);
+
+function latencyEdgesForKey(snap, key) {
+  if (LONG_LATENCY_KEYS.has(key) && snap.latency_long_edges_us?.length) {
+    return snap.latency_long_edges_us;
+  }
+  return snap.latency_edges_us || [];
+}
+
 // Same value drawn at the end of a finished phase band on the charts.
 function phaseChartEndLabel(span, history, cfg, isBytes, bwFiles) {
   if (!span?.end) return null;
@@ -563,9 +577,9 @@ function resultsPhaseRows(snap) {
 
 function resultsLatencyRows(snap) {
   const lat = snap.latencies || {};
-  const edges = snap.latency_edges_us || [];
   return LATENCY_RESULT_SPECS.map(([title, key]) => {
     const hist = lat[key];
+    const edges = latencyEdgesForKey(snap, key);
     const n = Number(hist?.total) || 0;
     const fail = Number(hist?.failures) || 0;
     return {
@@ -758,19 +772,23 @@ function formatLatencyBucket(edges, i) {
 }
 
 function drawLatencyHistograms(snap) {
-  const edges = snap.latency_edges_us || [];
+  const edgesIO = snap.latency_edges_us || [];
+  const edgesLong = snap.latency_long_edges_us?.length
+    ? snap.latency_long_edges_us
+    : edgesIO;
   const lat = snap.latencies || {};
   const specs = [
-    { id: "hist-create", meta: "hist-create-meta", hist: lat.create, color: "#0f7a5f", title: "Create" },
-    { id: "hist-delete", meta: "hist-delete-meta", hist: lat.delete, color: "#b45309", title: "Delete" },
-    { id: "hist-write", meta: "hist-write-meta", hist: lat.write, color: "#0f7a5f", title: "Write" },
-    { id: "hist-read", meta: "hist-read-meta", hist: lat.read, color: "#1f5fbf", title: "Read" },
-    { id: "hist-startup-cold", meta: "hist-startup-cold-meta", hist: lat.startup_cold, color: "#0e7490", title: "Startup Cold" },
-    { id: "hist-startup-warm", meta: "hist-startup-warm-meta", hist: lat.startup_warm, color: "#be185d", title: "Startup Warm" },
-    { id: "hist-git-clone", meta: "hist-git-clone-meta", hist: lat.git_clone, color: "#166534", title: "Git Clone" },
-    { id: "hist-untar", meta: "hist-untar-meta", hist: lat.untar, color: "#9a3412", title: "Untar" },
+    { id: "hist-create", meta: "hist-create-meta", hist: lat.create, color: "#0f7a5f", title: "Create", long: false },
+    { id: "hist-delete", meta: "hist-delete-meta", hist: lat.delete, color: "#b45309", title: "Delete", long: false },
+    { id: "hist-write", meta: "hist-write-meta", hist: lat.write, color: "#0f7a5f", title: "Write", long: false },
+    { id: "hist-read", meta: "hist-read-meta", hist: lat.read, color: "#1f5fbf", title: "Read", long: false },
+    { id: "hist-startup-cold", meta: "hist-startup-cold-meta", hist: lat.startup_cold, color: "#0e7490", title: "Startup Cold", long: true },
+    { id: "hist-startup-warm", meta: "hist-startup-warm-meta", hist: lat.startup_warm, color: "#be185d", title: "Startup Warm", long: true },
+    { id: "hist-git-clone", meta: "hist-git-clone-meta", hist: lat.git_clone, color: "#166534", title: "Git Clone", long: true },
+    { id: "hist-untar", meta: "hist-untar-meta", hist: lat.untar, color: "#9a3412", title: "Untar", long: true },
   ];
   for (const s of specs) {
+    const edges = s.long ? edgesLong : edgesIO;
     drawHistogram($(s.id), edges, s.hist, s.color, s.title);
     $(s.meta).textContent = formatLatencyMeta(s.hist, edges);
   }
@@ -1660,19 +1678,18 @@ function escapeHTML(s) {
 }
 
 function latencySummaryHTML(snap) {
-  const edges = snap.latency_edges_us || [];
   const lat = snap.latencies || {};
   const specs = [
-    ["Create", lat.create],
-    ["Delete", lat.delete],
-    ["Write", lat.write],
-    ["Read", lat.read],
-    ["Software Startup Cold", lat.startup_cold],
-    ["Software Startup Warm", lat.startup_warm],
-    ["Git Clone", lat.git_clone],
-    ["Untar", lat.untar],
+    ["Create", "create", lat.create],
+    ["Delete", "delete", lat.delete],
+    ["Write", "write", lat.write],
+    ["Read", "read", lat.read],
+    ["Software Startup Cold", "startup_cold", lat.startup_cold],
+    ["Software Startup Warm", "startup_warm", lat.startup_warm],
+    ["Git Clone", "git_clone", lat.git_clone],
+    ["Untar", "untar", lat.untar],
   ];
-  return specs.map(([title, hist], i) => {
+  return specs.map(([title, key, hist], i) => {
     const imgId = [
       "hist-create",
       "hist-delete",
@@ -1684,6 +1701,7 @@ function latencySummaryHTML(snap) {
       "hist-untar",
     ][i];
     const src = canvasPNG(imgId);
+    const edges = latencyEdgesForKey(snap, key);
     const meta = formatLatencyMeta(hist, edges);
     const img = src
       ? `<img src="${src}" alt="${escapeHTML(title)} latency histogram" />`

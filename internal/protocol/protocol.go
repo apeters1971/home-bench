@@ -50,7 +50,7 @@ const (
 	// DefaultStartupCommand is run from <prefix>/<test>/software (cold then warm).
 	DefaultStartupCommand = ". root/bin/thisroot.sh; root -b -q"
 	// DefaultGitCloneURL is cloned into <prefix>/<test>/software when set.
-	DefaultGitCloneURL = "https://gitlab.cern.ch/dss/eos.git"
+	DefaultGitCloneURL = "https://github.com/cern-eos/eos.git"
 	// DefaultUntarURL is downloaded and unpacked with tar xvf per host.
 	DefaultUntarURL = "https://xrootd.web.cern.ch/download/v6.1.1/xrootd-6.1.1.tar.gz"
 	// SoftwareUnpackTimeout bounds download+extract / git clone / untar per client.
@@ -267,6 +267,7 @@ type UIState struct {
 	History             []AggregatedSample `json:"history"`
 	Latencies           LatencySet         `json:"latencies"`
 	LatencyEdgesUs      []float64          `json:"latency_edges_us"`
+	LatencyLongEdgesUs  []float64          `json:"latency_long_edges_us"`
 	PhaseSpans          []PhaseSpan        `json:"phase_spans"`
 	PhaseOrder          []Phase            `json:"phase_order"`
 	StatusText         string             `json:"status_text"`
