@@ -88,26 +88,47 @@ func (w *Worker) runSoftwareStartup(ctx context.Context, cmd protocol.PhaseComma
 }
 
 func (w *Worker) runGitClone(ctx context.Context, cmd protocol.PhaseCommand) error {
+	url := strings.TrimSpace(cmd.GitCloneURL)
+	if url == "" {
+		w.Stats.ObserveGitCloneFailure()
+		return fmt.Errorf("git_clone_url is empty")
+	}
+
+	// Prepare on local scratch (not timed): fetch remote → bare repo → bundle,
+	// so the timed section only measures cloning from a local bundle onto the shared FS.
+	scratch, err := os.MkdirTemp(localScratchDir(), "homebench-git-*")
+	if err != nil {
+		w.Stats.ObserveGitCloneFailure()
+		return fmt.Errorf("temp git scratch: %w", err)
+	}
+	defer os.RemoveAll(scratch)
+
+	bare := filepath.Join(scratch, "bare.git")
+	bundle := filepath.Join(scratch, "repo.bundle")
+
+	if err := runShellCommand(ctx, scratch, "git clone --bare "+shellQuote(url)+" "+shellQuote(bare)); err != nil {
+		w.Stats.ObserveGitCloneFailure()
+		return fmt.Errorf("git clone --bare (prep): %w", err)
+	}
+	if err := runShellCommand(ctx, bare, "git bundle create "+shellQuote(bundle)+" --all"); err != nil {
+		w.Stats.ObserveGitCloneFailure()
+		return fmt.Errorf("git bundle create (prep): %w", err)
+	}
+
 	dir, err := w.prepareHostWorkDir(cmd, "git")
 	if err != nil {
 		w.Stats.ObserveGitCloneFailure()
 		return err
 	}
-	url := strings.TrimSpace(cmd.GitCloneURL)
-	if url == "" {
-		w.Stats.ObserveGitCloneFailure()
-		_ = os.RemoveAll(dir)
-		return fmt.Errorf("git_clone_url is empty")
-	}
 
 	t0 := time.Now()
-	err = runShellCommand(ctx, dir, "git clone "+shellQuote(url))
+	err = runShellCommand(ctx, dir, "git clone "+shellQuote(bundle)+" repo")
 	elapsed := time.Since(t0)
 	// Cleanup after measurement so histogram excludes delete time.
 	_ = os.RemoveAll(dir)
 	if err != nil {
 		w.Stats.ObserveGitCloneFailure()
-		return fmt.Errorf("git clone after %s: %w", elapsed, err)
+		return fmt.Errorf("git clone from bundle after %s: %w", elapsed, err)
 	}
 	w.Stats.ObserveGitClone(elapsed)
 	return nil
