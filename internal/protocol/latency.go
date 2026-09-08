@@ -164,8 +164,9 @@ func NewLatencySet() LatencySet {
 	return LatencySet{
 		Create:      NewLatencyHistogramScale(LatencyScaleIO),
 		Delete:      NewLatencyHistogramScale(LatencyScaleIO),
-		Write:       NewLatencyHistogramScale(LatencyScaleIO),
-		Read:        NewLatencyHistogramScale(LatencyScaleIO),
+		// Bandwidth read/write time whole 64 MiB files — use the long scale (to 60s).
+		Write:       NewLatencyHistogramScale(LatencyScaleLong),
+		Read:        NewLatencyHistogramScale(LatencyScaleLong),
 		StartupCold: NewLatencyHistogramScale(LatencyScaleLong),
 		StartupWarm: NewLatencyHistogramScale(LatencyScaleLong),
 		GitClone:    NewLatencyHistogramScale(LatencyScaleLong),

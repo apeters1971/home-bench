@@ -469,8 +469,8 @@ const DURATION_LABEL_PHASES = new Set([
 const LATENCY_RESULT_SPECS = [
   ["Create", "create"],
   ["Delete", "delete"],
-  ["Write", "write"],
-  ["Read", "read"],
+  ["Write (64MB)", "write"],
+  ["Read (64MB)", "read"],
   ["Software Startup Cold", "startup_cold"],
   ["Software Startup Warm", "startup_warm"],
   ["Git Clone", "git_clone"],
@@ -478,6 +478,8 @@ const LATENCY_RESULT_SPECS = [
 ];
 
 const LONG_LATENCY_KEYS = new Set([
+  "write",
+  "read",
   "startup_cold",
   "startup_warm",
   "git_clone",
@@ -780,8 +782,8 @@ function drawLatencyHistograms(snap) {
   const specs = [
     { id: "hist-create", meta: "hist-create-meta", hist: lat.create, color: "#0f7a5f", title: "Create", long: false },
     { id: "hist-delete", meta: "hist-delete-meta", hist: lat.delete, color: "#b45309", title: "Delete", long: false },
-    { id: "hist-write", meta: "hist-write-meta", hist: lat.write, color: "#0f7a5f", title: "Write", long: false },
-    { id: "hist-read", meta: "hist-read-meta", hist: lat.read, color: "#1f5fbf", title: "Read", long: false },
+    { id: "hist-write", meta: "hist-write-meta", hist: lat.write, color: "#0f7a5f", title: "Write (64MB)", long: true },
+    { id: "hist-read", meta: "hist-read-meta", hist: lat.read, color: "#1f5fbf", title: "Read (64MB)", long: true },
     { id: "hist-startup-cold", meta: "hist-startup-cold-meta", hist: lat.startup_cold, color: "#0e7490", title: "Startup Cold", long: true },
     { id: "hist-startup-warm", meta: "hist-startup-warm-meta", hist: lat.startup_warm, color: "#be185d", title: "Startup Warm", long: true },
     { id: "hist-git-clone", meta: "hist-git-clone-meta", hist: lat.git_clone, color: "#166534", title: "Git Clone", long: true },
@@ -1682,8 +1684,8 @@ function latencySummaryHTML(snap) {
   const specs = [
     ["Create", "create", lat.create],
     ["Delete", "delete", lat.delete],
-    ["Write", "write", lat.write],
-    ["Read", "read", lat.read],
+    ["Write (64MB)", "write", lat.write],
+    ["Read (64MB)", "read", lat.read],
     ["Software Startup Cold", "startup_cold", lat.startup_cold],
     ["Software Startup Warm", "startup_warm", lat.startup_warm],
     ["Git Clone", "git_clone", lat.git_clone],
