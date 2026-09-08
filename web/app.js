@@ -546,8 +546,12 @@ function resultsPhaseRows(snap) {
   const rows = [];
   for (const span of spans) {
     if (!span.end) continue;
-    // Prefer IOPS-chart end label (attainment % or duration); matches primary chart labels.
-    const value = phaseChartEndLabel(span, smoothed, cfg, false, bwFiles);
+    // Create/Delete → IOPS attainment; Write/Read/R+W → bandwidth attainment.
+    const useBytes =
+      span.phase === "write_bw" ||
+      span.phase === "read_bw" ||
+      span.phase === "read_write";
+    const value = phaseChartEndLabel(span, smoothed, cfg, useBytes, bwFiles);
     if (value == null) continue;
     rows.push({
       phase: PHASE_LABELS[span.phase] || span.phase,
@@ -1012,11 +1016,12 @@ function drawCharts(history) {
     { key: "write_iops", color: "#0f7a5f" },
     { key: "read_iops", color: "#1f5fbf" },
     { key: "delete_iops", color: "#b45309" },
-  ], false, spans, cfg, bwFiles);
+  ], false, spans, cfg, bwFiles, false);
+  // Stack Write under Read so R+W matches the summed expectation line.
   drawLineChart($("chart-bw"), smoothed, [
     { key: "write_bps", color: "#0f7a5f" },
     { key: "read_bps", color: "#1f5fbf" },
-  ], true, spans, cfg, bwFiles);
+  ], true, spans, cfg, bwFiles, true);
 }
 
 function sampleTime(pt) {
@@ -1349,10 +1354,11 @@ function showTooltip(canvas, idx, localX, localY) {
   tip.style.top = `${Math.max(4, top)}px`;
 }
 
-function drawLineChart(canvas, history, series, isBytes, spans, cfg, bwFiles) {
+function drawLineChart(canvas, history, series, isBytes, spans, cfg, bwFiles, stacked) {
   bindChartHover(canvas);
   cfg = cfg || {};
   bwFiles = bwFiles || 0;
+  stacked = !!stacked;
 
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
@@ -1404,14 +1410,40 @@ function drawLineChart(canvas, history, series, isBytes, spans, cfg, bwFiles) {
 
   const expected = history.map((pt) => expectedAtTime(sampleTime(pt), spans, cfg, isBytes, bwFiles));
 
+  // Precompute per-point series values (raw or cumulative tops when stacked).
+  const seriesTops = history.map((pt) => {
+    const tops = [];
+    let sum = 0;
+    for (const s of series) {
+      const v = Number(pt[s.key]) || 0;
+      sum = stacked ? sum + v : v;
+      tops.push(stacked ? sum : v);
+    }
+    return tops;
+  });
+
   let maxY = 1;
-  for (const pt of history) {
-    for (const s of series) maxY = Math.max(maxY, Number(pt[s.key]) || 0);
+  for (const tops of seriesTops) {
+    for (const v of tops) maxY = Math.max(maxY, v || 0);
   }
   for (const e of expected) maxY = Math.max(maxY, e || 0);
   maxY *= 1.15;
 
-  canvas._chart = { history, series, isBytes, spans, expected, pad, tMin, tMax, maxY, plotW, plotH };
+  canvas._chart = {
+    history,
+    series,
+    isBytes,
+    spans,
+    expected,
+    seriesTops,
+    stacked,
+    pad,
+    tMin,
+    tMax,
+    maxY,
+    plotW,
+    plotH,
+  };
 
   drawPhaseBands(ctx, spans, tMin, tMax, pad, plotW, plotH, history, cfg, isBytes, bwFiles);
 
@@ -1459,13 +1491,33 @@ function drawLineChart(canvas, history, series, isBytes, spans, cfg, bwFiles) {
   ctx.stroke();
   ctx.setLineDash([]);
 
-  for (const s of series) {
+  // Draw series bottom→top. When stacked, fill the band then stroke the top edge
+  // so Read sits on Write and the combined height matches R+W expectation.
+  for (let si = 0; si < series.length; si++) {
+    const s = series[si];
+    if (stacked) {
+      ctx.beginPath();
+      history.forEach((pt, i) => {
+        const x = xAt(sampleTime(pt));
+        const y = yAt(seriesTops[i][si] || 0);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      for (let i = history.length - 1; i >= 0; i--) {
+        const x = xAt(sampleTime(history[i]));
+        const yBot = yAt(si === 0 ? 0 : seriesTops[i][si - 1] || 0);
+        ctx.lineTo(x, yBot);
+      }
+      ctx.closePath();
+      ctx.fillStyle = s.color.length === 7 ? `${s.color}33` : s.color;
+      ctx.fill();
+    }
     ctx.beginPath();
     ctx.strokeStyle = s.color;
     ctx.lineWidth = 2;
     history.forEach((pt, i) => {
       const x = xAt(sampleTime(pt));
-      const y = yAt(Number(pt[s.key]) || 0);
+      const y = yAt(seriesTops[i][si] || 0);
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     });
@@ -1486,9 +1538,9 @@ function drawLineChart(canvas, history, series, isBytes, spans, cfg, bwFiles) {
     ctx.lineTo(x, pad.t + plotH);
     ctx.stroke();
     ctx.setLineDash([]);
-    for (const s of series) {
-      const y = yAt(Number(pt[s.key]) || 0);
-      ctx.fillStyle = s.color;
+    for (let si = 0; si < series.length; si++) {
+      const y = yAt(seriesTops[idx][si] || 0);
+      ctx.fillStyle = series[si].color;
       ctx.beginPath();
       ctx.arc(x, y, 3.5, 0, Math.PI * 2);
       ctx.fill();
