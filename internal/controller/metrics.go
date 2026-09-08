@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -111,31 +112,79 @@ func (m *MetricsStore) apply(sample protocol.MetricSample) {
 		return
 	}
 
-	// Normalize multi-second report windows to per-second rates. Credit only
-	// the current second — past buckets may already be flushed into history.
+	// Multi-second report windows (large fleets) must spread ops across the
+	// window. Crediting ops/interval into only the current second under-reports
+	// by ~interval (e.g. 10s reports → chart ~10× too low).
 	scale := sample.IntervalSec
 	if scale < 1 {
 		scale = 1
 	}
+	windows := int(math.Round(scale))
+	if windows < 1 {
+		windows = 1
+	}
+	if windows > 120 {
+		windows = 120
+	}
+
 	sec := sample.Timestamp.Unix()
 	if sec <= 0 {
 		sec = time.Now().Unix()
 	}
-	b, ok := m.buckets[sec]
-	if !ok {
-		b = &bucket{ts: time.Unix(sec, 0).UTC()}
-		m.buckets[sec] = b
+
+	div := float64(windows)
+	readInc := float64(sample.ReadOps) / div
+	writeInc := float64(sample.WriteOps) / div
+	createInc := float64(sample.CreateOps) / div
+	deleteInc := float64(sample.DeleteOps) / div
+	readBytesInc := float64(sample.ReadBytes) / div
+	writeBytesInc := float64(sample.WriteBytes) / div
+
+	for i := 0; i < windows; i++ {
+		m.creditSecond(sec-int64(i), readInc, writeInc, createInc, deleteInc, readBytesInc, writeBytesInc)
 	}
-	b.readOps += float64(sample.ReadOps) / scale
-	b.writeOps += float64(sample.WriteOps) / scale
-	b.createOps += float64(sample.CreateOps) / scale
-	b.deleteOps += float64(sample.DeleteOps) / scale
-	b.readBytes += float64(sample.ReadBytes) / scale
-	b.writeBytes += float64(sample.WriteBytes) / scale
 	m.latencies.Merge(sample.Latencies)
 
 	m.flushClosed(sec)
 	m.trim()
+}
+
+// creditSecond adds a per-second rate slice to an open bucket or, if that
+// second was already flushed, patches the matching history point.
+func (m *MetricsStore) creditSecond(sec int64, readOps, writeOps, createOps, deleteOps, readBytes, writeBytes float64) {
+	if b, ok := m.buckets[sec]; ok {
+		b.readOps += readOps
+		b.writeOps += writeOps
+		b.createOps += createOps
+		b.deleteOps += deleteOps
+		b.readBytes += readBytes
+		b.writeBytes += writeBytes
+		return
+	}
+	for i := len(m.history) - 1; i >= 0; i-- {
+		hs := m.history[i].Timestamp.Unix()
+		if hs > sec {
+			continue
+		}
+		if hs == sec {
+			m.history[i].ReadIOPS += readOps
+			m.history[i].WriteIOPS += writeOps + createOps
+			m.history[i].CreateIOPS += createOps
+			m.history[i].DeleteIOPS += deleteOps
+			m.history[i].ReadBps += readBytes
+			m.history[i].WriteBps += writeBytes
+			return
+		}
+		break
+	}
+	b := &bucket{ts: time.Unix(sec, 0).UTC()}
+	b.readOps = readOps
+	b.writeOps = writeOps
+	b.createOps = createOps
+	b.deleteOps = deleteOps
+	b.readBytes = readBytes
+	b.writeBytes = writeBytes
+	m.buckets[sec] = b
 }
 
 // ensureSecondsThrough creates empty buckets for every second after the last
