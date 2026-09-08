@@ -499,20 +499,39 @@ func (o *Orchestrator) run(ctx context.Context, cfg protocol.Config, nClients in
 		if err := o.runSoftwarePhase(ctx, protocol.PhaseSoftwareWarm, protocol.SoftwareStartupWarmTimeout); err != nil {
 			return
 		}
-		// One controller-side cleanup (not N concurrent client deletes on the shared tree).
-		o.cleanupSoftwareAsync(cfg)
+		// Clear the unpacked package tree before git/untar reuse software/, or
+		// async if nothing else needs that directory.
+		if cfg.GitCloneEnabled() || cfg.UntarEnabled() {
+			o.cleanupSoftware(cfg)
+		} else {
+			o.cleanupSoftwareAsync(cfg)
+		}
 	}
 
-	// Optional: git clone and/or tar xvf into <prefix>/<test>/software.
+	// Optional: controller prepares a shared git bundle once, then clients clone it.
 	if cfg.GitCloneEnabled() {
+		if err := o.runControllerGitBundle(ctx); err != nil {
+			log.Printf("orchestrator: git bundle prep failed: %v", err)
+			return
+		}
 		if err := o.runSoftwarePhase(ctx, protocol.PhaseGitClone, protocol.SoftwareOpTimeout); err != nil {
 			return
 		}
 	}
+	// Optional: controller downloads the untar archive once, then clients extract it.
 	if cfg.UntarEnabled() {
+		if err := o.runControllerUntarArchive(ctx); err != nil {
+			log.Printf("orchestrator: untar archive prep failed: %v", err)
+			return
+		}
 		if err := o.runSoftwarePhase(ctx, protocol.PhaseUntar, protocol.SoftwareOpTimeout); err != nil {
 			return
 		}
+	}
+
+	// Drop shared git/untar artifacts under software/ once clients are done.
+	if cfg.GitCloneEnabled() || cfg.UntarEnabled() {
+		o.cleanupSoftwareAsync(cfg)
 	}
 
 	// 1) Create ramp
@@ -565,6 +584,51 @@ func (o *Orchestrator) runControllerUnpack(ctx context.Context) error {
 	}
 	log.Printf("orchestrator: software unpack complete")
 	return nil
+}
+
+func (o *Orchestrator) runControllerGitBundle(ctx context.Context) error {
+	cfg := o.Config()
+	o.setPhase(protocol.PhaseGitClone, 100, "Git Clone — preparing shared bundle")
+	log.Printf("orchestrator: controller preparing git bundle from %s into %d prefix(es)", cfg.GitCloneURL, len(cfg.Prefixes))
+
+	ctx, cancel := context.WithTimeout(ctx, protocol.SoftwareOpTimeout)
+	defer cancel()
+
+	if err := software.BundleToPrefixes(ctx, cfg.GitCloneURL, cfg.Prefixes, cfg.TestName); err != nil {
+		return err
+	}
+	log.Printf("orchestrator: shared git bundle ready")
+	return nil
+}
+
+func (o *Orchestrator) runControllerUntarArchive(ctx context.Context) error {
+	cfg := o.Config()
+	o.setPhase(protocol.PhaseUntar, 100, "Untar — downloading shared archive")
+	log.Printf("orchestrator: controller downloading untar archive %s into %d prefix(es)", cfg.UntarURL, len(cfg.Prefixes))
+
+	ctx, cancel := context.WithTimeout(ctx, protocol.SoftwareOpTimeout)
+	defer cancel()
+
+	if err := software.DownloadUntarToPrefixes(ctx, cfg.UntarURL, cfg.Prefixes, cfg.TestName); err != nil {
+		return err
+	}
+	log.Printf("orchestrator: shared untar archive ready")
+	return nil
+}
+
+// cleanupSoftware removes shared <prefix>/<test>/software trees (blocking).
+func (o *Orchestrator) cleanupSoftware(cfg protocol.Config) {
+	for _, prefix := range cfg.Prefixes {
+		prefix = strings.TrimSpace(prefix)
+		if prefix == "" {
+			continue
+		}
+		dir := software.Dir(prefix, cfg.TestName)
+		log.Printf("orchestrator: cleaning software tree %s", dir)
+		if err := os.RemoveAll(dir); err != nil {
+			log.Printf("orchestrator: software cleanup %s: %v", dir, err)
+		}
+	}
 }
 
 // cleanupSoftwareAsync removes shared <prefix>/<test>/software trees without blocking the run.

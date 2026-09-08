@@ -88,31 +88,10 @@ func (w *Worker) runSoftwareStartup(ctx context.Context, cmd protocol.PhaseComma
 }
 
 func (w *Worker) runGitClone(ctx context.Context, cmd protocol.PhaseCommand) error {
-	url := strings.TrimSpace(cmd.GitCloneURL)
-	if url == "" {
+	bundle := software.GitBundlePath(cmd.Prefix, cmd.TestName)
+	if st, err := os.Stat(bundle); err != nil || st.IsDir() {
 		w.Stats.ObserveGitCloneFailure()
-		return fmt.Errorf("git_clone_url is empty")
-	}
-
-	// Prepare on local scratch (not timed): fetch remote → bare repo → bundle,
-	// so the timed section only measures cloning from a local bundle onto the shared FS.
-	scratch, err := os.MkdirTemp(localScratchDir(), "homebench-git-*")
-	if err != nil {
-		w.Stats.ObserveGitCloneFailure()
-		return fmt.Errorf("temp git scratch: %w", err)
-	}
-	defer os.RemoveAll(scratch)
-
-	bare := filepath.Join(scratch, "bare.git")
-	bundle := filepath.Join(scratch, "repo.bundle")
-
-	if err := runShellCommand(ctx, scratch, "git clone --bare "+shellQuote(url)+" "+shellQuote(bare)); err != nil {
-		w.Stats.ObserveGitCloneFailure()
-		return fmt.Errorf("git clone --bare (prep): %w", err)
-	}
-	if err := runShellCommand(ctx, bare, "git bundle create "+shellQuote(bundle)+" --all"); err != nil {
-		w.Stats.ObserveGitCloneFailure()
-		return fmt.Errorf("git bundle create (prep): %w", err)
+		return fmt.Errorf("shared git bundle missing: %s (controller should prepare first)", bundle)
 	}
 
 	dir, err := w.prepareHostWorkDir(cmd, "git")
@@ -128,7 +107,7 @@ func (w *Worker) runGitClone(ctx context.Context, cmd protocol.PhaseCommand) err
 	_ = os.RemoveAll(dir)
 	if err != nil {
 		w.Stats.ObserveGitCloneFailure()
-		return fmt.Errorf("git clone from bundle after %s: %w", elapsed, err)
+		return fmt.Errorf("git clone from shared bundle after %s: %w", elapsed, err)
 	}
 	w.Stats.ObserveGitClone(elapsed)
 	return nil
@@ -140,20 +119,10 @@ func (w *Worker) runUntar(ctx context.Context, cmd protocol.PhaseCommand) error 
 		w.Stats.ObserveUntarFailure()
 		return fmt.Errorf("untar_url is empty")
 	}
-
-	// Download to local scratch so the timed section is unpack onto the shared FS only.
-	tmpFile, err := os.CreateTemp(localScratchDir(), "homebench-untar-*"+archiveSuffix(url))
-	if err != nil {
+	archive := software.UntarArchivePath(cmd.Prefix, cmd.TestName, url)
+	if st, err := os.Stat(archive); err != nil || st.IsDir() {
 		w.Stats.ObserveUntarFailure()
-		return fmt.Errorf("temp archive: %w", err)
-	}
-	archivePath := tmpFile.Name()
-	_ = tmpFile.Close()
-	defer os.Remove(archivePath)
-
-	if err := software.DownloadFile(ctx, url, archivePath); err != nil {
-		w.Stats.ObserveUntarFailure()
-		return err
+		return fmt.Errorf("shared untar archive missing: %s (controller should prepare first)", archive)
 	}
 
 	dir, err := w.prepareHostWorkDir(cmd, "untar")
@@ -163,7 +132,7 @@ func (w *Worker) runUntar(ctx context.Context, cmd protocol.PhaseCommand) error 
 	}
 
 	t0 := time.Now()
-	err = runShellCommand(ctx, dir, "tar xvf "+shellQuote(archivePath))
+	err = runShellCommand(ctx, dir, "tar xvf "+shellQuote(archive))
 	elapsed := time.Since(t0)
 	// Cleanup after measurement so histogram excludes delete time.
 	_ = os.RemoveAll(dir)
@@ -173,32 +142,6 @@ func (w *Worker) runUntar(ctx context.Context, cmd protocol.PhaseCommand) error 
 	}
 	w.Stats.ObserveUntar(elapsed)
 	return nil
-}
-
-// localScratchDir prefers /var/tmp for large archives, then /tmp, then os.TempDir.
-func localScratchDir() string {
-	for _, d := range []string{"/var/tmp", "/tmp"} {
-		if st, err := os.Stat(d); err == nil && st.IsDir() {
-			return d
-		}
-	}
-	return os.TempDir()
-}
-
-func archiveSuffix(url string) string {
-	u := strings.ToLower(url)
-	switch {
-	case strings.HasSuffix(u, ".tar.gz"), strings.HasSuffix(u, ".tgz"):
-		return ".tar.gz"
-	case strings.HasSuffix(u, ".tar.bz2"), strings.HasSuffix(u, ".tbz2"):
-		return ".tar.bz2"
-	case strings.HasSuffix(u, ".tar.xz"), strings.HasSuffix(u, ".txz"):
-		return ".tar.xz"
-	case strings.HasSuffix(u, ".tar"):
-		return ".tar"
-	default:
-		return ".tar"
-	}
 }
 
 func shellQuote(s string) string {

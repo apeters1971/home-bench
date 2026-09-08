@@ -49,9 +49,9 @@ const (
 	DefaultPackageURL = "https://root.cern/download/root_v6.40.02.Linux-almalinux9.8-x86_64-gcc11.5.tar.gz"
 	// DefaultStartupCommand is run from <prefix>/<test>/software (cold then warm).
 	DefaultStartupCommand = ". root/bin/thisroot.sh; root -b -q"
-	// DefaultGitCloneURL is cloned into <prefix>/<test>/software when set.
+	// DefaultGitCloneURL is fetched once by the controller into <prefix>/<test>/software/repo.bundle.
 	DefaultGitCloneURL = "https://github.com/cern-eos/eos.git"
-	// DefaultUntarURL is downloaded and unpacked with tar xvf per host.
+	// DefaultUntarURL is downloaded once by the controller into <prefix>/<test>/software/.
 	DefaultUntarURL = "https://xrootd.web.cern.ch/download/v6.1.1/xrootd-6.1.1.tar.gz"
 	// SoftwareUnpackTimeout bounds download+extract / git clone / untar per client.
 	SoftwareUnpackTimeout = 30 * time.Minute
@@ -82,8 +82,8 @@ type Config struct {
 	PhaseStepSeconds   float64  `json:"phase_step_seconds"`   // seconds at each 10% ramp step
 	PackageURL         string   `json:"package_url"`          // tarball URL for software phases
 	StartupCommand     string   `json:"startup_command"`      // shell command run from <prefix>/<test>/software
-	GitCloneURL        string   `json:"git_clone_url"`        // optional git repo URL cloned per-host
-	UntarURL           string   `json:"untar_url"`            // optional archive URL unpacked per-host with tar xvf
+	GitCloneURL        string   `json:"git_clone_url"`        // optional; controller bundles once, clients clone from software/
+	UntarURL           string   `json:"untar_url"`            // optional; controller downloads once, clients tar xvf from software/
 }
 
 // DefaultConfig returns sensible starting values.
