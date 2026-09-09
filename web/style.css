@@ -100,6 +100,32 @@ html, body {
   display: flex;
   gap: 18px;
   flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.top-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  min-width: min(100%, 640px);
+}
+
+.run-totals {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+
+.run-totals .meta-block {
+  min-width: 88px;
+}
+
+.run-totals .value {
+  font-size: 0.95rem;
 }
 
 .meta-block {

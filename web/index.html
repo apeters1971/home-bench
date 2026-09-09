@@ -19,26 +19,54 @@
         <span id="controller-host" class="controller-host mono"></span>
       </div>
     </div>
-    <div class="run-meta">
-      <div class="meta-block">
-        <span class="label">Startup</span>
-        <span id="startup" class="value mono" title="Time from first client connect to last client connect">00:00:00</span>
+    <div class="top-right">
+      <div class="run-meta">
+        <div class="meta-block">
+          <span class="label">Startup</span>
+          <span id="startup" class="value mono" title="Time from first client connect to last client connect">00:00:00</span>
+        </div>
+        <div class="meta-block">
+          <span class="label">Elapsed</span>
+          <span id="elapsed" class="value mono">00:00:00</span>
+        </div>
+        <div class="meta-block">
+          <span class="label">Estimated</span>
+          <span id="estimated" class="value mono" title="">00:00:00</span>
+        </div>
+        <div class="meta-block">
+          <span class="label">Clients</span>
+          <span id="client-count" class="value mono">0</span>
+        </div>
+        <div class="meta-block wide">
+          <span class="label">Status</span>
+          <span id="status-text" class="value">Ready</span>
+        </div>
       </div>
-      <div class="meta-block">
-        <span class="label">Elapsed</span>
-        <span id="elapsed" class="value mono">00:00:00</span>
-      </div>
-      <div class="meta-block">
-        <span class="label">Estimated</span>
-        <span id="estimated" class="value mono" title="">00:00:00</span>
-      </div>
-      <div class="meta-block">
-        <span class="label">Clients</span>
-        <span id="client-count" class="value mono">0</span>
-      </div>
-      <div class="meta-block wide">
-        <span class="label">Status</span>
-        <span id="status-text" class="value">Ready</span>
+      <div class="run-totals" id="run-totals" title="Cumulative for the current or last run">
+        <div class="meta-block">
+          <span class="label">Created</span>
+          <span id="tot-created" class="value mono">0</span>
+        </div>
+        <div class="meta-block">
+          <span class="label">Deleted</span>
+          <span id="tot-deleted" class="value mono">0</span>
+        </div>
+        <div class="meta-block">
+          <span class="label">Read</span>
+          <span id="tot-read" class="value mono">0 B</span>
+        </div>
+        <div class="meta-block">
+          <span class="label">Written</span>
+          <span id="tot-written" class="value mono">0 B</span>
+        </div>
+        <div class="meta-block">
+          <span class="label">Git files</span>
+          <span id="tot-git" class="value mono">0</span>
+        </div>
+        <div class="meta-block">
+          <span class="label">Untar files</span>
+          <span id="tot-untar" class="value mono">0</span>
+        </div>
       </div>
     </div>
   </header>

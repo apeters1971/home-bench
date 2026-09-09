@@ -21,6 +21,7 @@ type MetricsStore struct {
 	history   []protocol.AggregatedSample
 	buckets   map[int64]*bucket
 	latencies protocol.LatencySet
+	totals    protocol.RunTotals
 
 	in   chan protocol.MetricSample
 	quit chan struct{}
@@ -78,6 +79,7 @@ func (m *MetricsStore) Begin() {
 	m.history = m.history[:0]
 	m.buckets = make(map[int64]*bucket)
 	m.latencies = protocol.NewLatencySet()
+	m.totals = protocol.RunTotals{}
 	m.recording = true
 }
 
@@ -143,6 +145,13 @@ func (m *MetricsStore) apply(sample protocol.MetricSample) {
 	for i := 0; i < windows; i++ {
 		m.creditSecond(sec-int64(i), readInc, writeInc, createInc, deleteInc, readBytesInc, writeBytesInc)
 	}
+	// Cumulative totals use raw counts (not the per-second spread).
+	m.totals.Created += sample.CreateOps
+	m.totals.Deleted += sample.DeleteOps
+	m.totals.ReadBytes += sample.ReadBytes
+	m.totals.WriteBytes += sample.WriteBytes
+	m.totals.GitFiles += sample.GitFiles
+	m.totals.UntarFiles += sample.UntarFiles
 	m.latencies.Merge(sample.Latencies)
 
 	m.flushClosed(sec)
@@ -277,4 +286,10 @@ func (m *MetricsStore) Latencies() protocol.LatencySet {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.latencies.Clone()
+}
+
+func (m *MetricsStore) Totals() protocol.RunTotals {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.totals
 }

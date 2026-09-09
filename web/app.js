@@ -180,6 +180,37 @@ function updateEstimated(snap) {
   el.title = title;
 }
 
+function formatCount(n) {
+  const v = Math.max(0, Number(n) || 0);
+  if (v >= 1e9) return (v / 1e9).toFixed(2) + "B";
+  if (v >= 1e6) return (v / 1e6).toFixed(2) + "M";
+  if (v >= 1e3) return (v / 1e3).toFixed(1) + "k";
+  return String(Math.round(v));
+}
+
+function formatBytes(n) {
+  const v = Math.max(0, Number(n) || 0);
+  if (v >= 1e12) return (v / 1e12).toFixed(2) + " TB";
+  if (v >= 1e9) return (v / 1e9).toFixed(2) + " GB";
+  if (v >= 1e6) return (v / 1e6).toFixed(1) + " MB";
+  if (v >= 1e3) return (v / 1e3).toFixed(1) + " KB";
+  return Math.round(v) + " B";
+}
+
+function updateRunTotals(totals) {
+  const t = totals || {};
+  const set = (id, text) => {
+    const el = $(id);
+    if (el) el.textContent = text;
+  };
+  set("tot-created", formatCount(t.created));
+  set("tot-deleted", formatCount(t.deleted));
+  set("tot-read", formatBytes(t.read_bytes));
+  set("tot-written", formatBytes(t.write_bytes));
+  set("tot-git", formatCount(t.git_files));
+  set("tot-untar", formatCount(t.untar_files));
+}
+
 function formatRate(n) {
   if (n >= 1e9) return (n / 1e9).toFixed(2) + " GB/s";
   if (n >= 1e6) return (n / 1e6).toFixed(1) + " MB/s";
@@ -310,6 +341,7 @@ function render(snap) {
   $("startup").textContent = formatElapsed(snap.startup_sec);
   $("elapsed").textContent = formatElapsed(snap.elapsed_sec);
   updateEstimated(snap);
+  updateRunTotals(snap.totals);
   const totalClients = snap.client_count ?? snap.clients?.length ?? 0;
   const participants = snap.participant_count ?? 0;
   $("client-count").textContent =

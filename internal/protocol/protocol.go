@@ -244,10 +244,24 @@ type MetricSample struct {
 	CreateOps  int64     `json:"create_ops"`
 	ReadBytes  int64     `json:"read_bytes"`
 	WriteBytes int64     `json:"write_bytes"`
+	// GitFiles / UntarFiles are regular files produced by successful git/untar phases
+	// in this metrics window (not rate-normalized on the controller).
+	GitFiles   int64 `json:"git_files,omitempty"`
+	UntarFiles int64 `json:"untar_files,omitempty"`
 	// IntervalSec is the reporting window this sample covers (for rate normalization).
 	IntervalSec float64 `json:"interval_sec,omitempty"`
 	// Latency deltas since the previous metrics push (bucket counts).
 	Latencies LatencySet `json:"latencies"`
+}
+
+// RunTotals is cumulative work observed during the current (or last) run.
+type RunTotals struct {
+	Created    int64 `json:"created"`     // create-phase files
+	Deleted    int64 `json:"deleted"`     // delete-phase files
+	ReadBytes  int64 `json:"read_bytes"`  // bytes read (BW / R+W)
+	WriteBytes int64 `json:"write_bytes"` // bytes written (create + BW / R+W)
+	GitFiles   int64 `json:"git_files"`   // files present after git clone
+	UntarFiles int64 `json:"untar_files"` // files present after tar extract
 }
 
 // AggregatedSample is the controller-side sum across clients for one second.
@@ -352,6 +366,7 @@ type UIState struct {
 	ParticipantCount   int                `json:"participant_count"`
 	SelectedAll        bool               `json:"selected_all"` // every connected client is selected
 	ControllerHostname string             `json:"controller_hostname"`
+	Totals             RunTotals          `json:"totals"`
 }
 
 // PhaseOrder is the base sequence of a full run (without optional software phases).

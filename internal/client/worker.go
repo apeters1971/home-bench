@@ -23,6 +23,8 @@ type Stats struct {
 	DeleteOps  atomic.Int64
 	ReadBytes  atomic.Int64
 	WriteBytes atomic.Int64
+	GitFiles   atomic.Int64
+	UntarFiles atomic.Int64
 
 	latMu     sync.Mutex
 	latencies protocol.LatencySet
@@ -116,6 +118,8 @@ func (s *Stats) SnapshotAndReset() protocol.MetricSample {
 		DeleteOps:  s.DeleteOps.Swap(0),
 		ReadBytes:  s.ReadBytes.Swap(0),
 		WriteBytes: s.WriteBytes.Swap(0),
+		GitFiles:   s.GitFiles.Swap(0),
+		UntarFiles: s.UntarFiles.Swap(0),
 		Latencies:  lat,
 		Timestamp:  time.Now().UTC(),
 	}

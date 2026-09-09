@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -103,12 +104,17 @@ func (w *Worker) runGitClone(ctx context.Context, cmd protocol.PhaseCommand) err
 	t0 := time.Now()
 	err = runShellCommand(ctx, dir, "git clone "+shellQuote(bundle)+" repo")
 	elapsed := time.Since(t0)
+	var files int64
+	if err == nil {
+		files = countRegularFiles(dir)
+	}
 	// Cleanup after measurement so histogram excludes delete time.
 	_ = os.RemoveAll(dir)
 	if err != nil {
 		w.Stats.ObserveGitCloneFailure()
 		return fmt.Errorf("git clone from shared bundle after %s: %w", elapsed, err)
 	}
+	w.Stats.GitFiles.Add(files)
 	w.Stats.ObserveGitClone(elapsed)
 	return nil
 }
@@ -134,14 +140,34 @@ func (w *Worker) runUntar(ctx context.Context, cmd protocol.PhaseCommand) error 
 	t0 := time.Now()
 	err = runShellCommand(ctx, dir, "tar xvf "+shellQuote(archive))
 	elapsed := time.Since(t0)
+	var files int64
+	if err == nil {
+		files = countRegularFiles(dir)
+	}
 	// Cleanup after measurement so histogram excludes delete time.
 	_ = os.RemoveAll(dir)
 	if err != nil {
 		w.Stats.ObserveUntarFailure()
 		return fmt.Errorf("tar xvf after %s: %w", elapsed, err)
 	}
+	w.Stats.UntarFiles.Add(files)
 	w.Stats.ObserveUntar(elapsed)
 	return nil
+}
+
+// countRegularFiles returns how many non-directory entries exist under root.
+func countRegularFiles(root string) int64 {
+	var n int64
+	_ = filepath.WalkDir(root, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.Type().IsRegular() {
+			n++
+		}
+		return nil
+	})
+	return n
 }
 
 func shellQuote(s string) string {

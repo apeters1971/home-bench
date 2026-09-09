@@ -237,6 +237,7 @@ func (o *Orchestrator) Snapshot() protocol.UIState {
 		ParticipantCount:   participantCount,
 		SelectedAll:        selectedAll,
 		ControllerHostname: o.hostname,
+		Totals:             o.metrics.Totals(),
 	}
 }
 
