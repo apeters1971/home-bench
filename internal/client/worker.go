@@ -491,28 +491,30 @@ func (w *Worker) runRIOPS(ctx context.Context, cmd protocol.PhaseCommand) error 
 	defer f.Close()
 
 	deadline := time.Now().Add(durationOf(cmd))
+	writeUntil := time.Now().Add(durationOf(cmd) / 2)
 	buf := alignedBuffer(int(ioSize))
 	_, _ = rand.Read(buf)
 
-	for {
-		if time.Now().After(deadline) {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		// Offset is a multiple of ioSize (== directAlign), as required by O_DIRECT.
-		off := int64(mrand.Int64N(blocks)) * ioSize
-		if mrand.IntN(2) == 0 {
-			if _, err := f.WriteAt(buf, off); err != nil {
+	doIO := func(write bool, until time.Time) error {
+		for {
+			if time.Now().After(until) {
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			// Offset is a multiple of ioSize (== directAlign), as required by O_DIRECT.
+			off := int64(mrand.Int64N(blocks)) * ioSize
+			if write {
+				if _, err := f.WriteAt(buf, off); err != nil {
+					continue
+				}
+				w.Stats.WriteOps.Add(1)
+				w.Stats.WriteBytes.Add(ioSize)
 				continue
 			}
-			w.Stats.WriteOps.Add(1)
-			w.Stats.WriteBytes.Add(ioSize)
-		} else {
 			if _, err := f.ReadAt(buf, off); err != nil && err != io.EOF {
 				continue
 			}
@@ -520,6 +522,12 @@ func (w *Worker) runRIOPS(ctx context.Context, cmd protocol.PhaseCommand) error 
 			w.Stats.ReadBytes.Add(ioSize)
 		}
 	}
+
+	// Sequential: random 4 KiB writes first, then random 4 KiB reads (not interleaved).
+	if err := doIO(true, writeUntil); err != nil {
+		return err
+	}
+	return doIO(false, deadline)
 }
 
 func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, doWrite, doRead bool) error {
