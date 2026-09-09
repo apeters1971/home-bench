@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	mrand "math/rand/v2"
 	"os"
 	"path/filepath"
 	"sync"
@@ -294,6 +295,8 @@ func (w *Worker) Run(ctx context.Context, cmd protocol.PhaseCommand) error {
 		return w.runReadBW(ctx, cmd)
 	case protocol.PhaseReadWrite:
 		return w.runReadWrite(ctx, cmd)
+	case protocol.PhaseRIOPS:
+		return w.runRIOPS(ctx, cmd)
 	default:
 		return fmt.Errorf("unknown phase %s", cmd.Phase)
 	}
@@ -439,6 +442,84 @@ func (w *Worker) runReadWrite(ctx context.Context, cmd protocol.PhaseCommand) er
 		return nil
 	}
 	return first
+}
+
+// runRIOPS creates a 1 GiB sparse file, then drives random 4 KiB reads and writes
+// at random aligned offsets for the phase step duration. Ops feed ReadOps/WriteOps
+// so they appear on the IOPS timeline. Prefers O_DIRECT (or platform equivalent)
+// when the filesystem accepts it.
+func (w *Worker) runRIOPS(ctx context.Context, cmd protocol.PhaseCommand) error {
+	fileSize := cmd.FileSize
+	if fileSize <= 0 {
+		fileSize = protocol.RIOPSFileSize
+	}
+	ioSize := int64(protocol.RIOPSIOSize)
+	if ioSize < int64(directAlign) {
+		ioSize = int64(directAlign)
+	}
+	ioSize = (ioSize / int64(directAlign)) * int64(directAlign)
+	fileSize = (fileSize / ioSize) * ioSize
+	if fileSize < ioSize {
+		return fmt.Errorf("riops file size %d < io size %d", fileSize, ioSize)
+	}
+	blocks := fileSize / ioSize
+
+	dir := filepath.Join(HostRoot(cmd.Prefix, cmd.TestName, w.Hostname), "riops")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, "sparse.1g")
+
+	// Create / size the sparse file with buffered I/O, then reopen for the workload.
+	prep, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		return err
+	}
+	if err := prep.Truncate(fileSize); err != nil {
+		_ = prep.Close()
+		return fmt.Errorf("sparse truncate: %w", err)
+	}
+	_ = prep.Close()
+
+	f, err := openDirectReadWrite(path)
+	if err != nil {
+		f, err = os.OpenFile(path, os.O_RDWR, 0o644)
+		if err != nil {
+			return err
+		}
+	}
+	defer f.Close()
+
+	deadline := time.Now().Add(durationOf(cmd))
+	buf := alignedBuffer(int(ioSize))
+	_, _ = rand.Read(buf)
+
+	for {
+		if time.Now().After(deadline) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		// Offset is a multiple of ioSize (== directAlign), as required by O_DIRECT.
+		off := int64(mrand.Int64N(blocks)) * ioSize
+		if mrand.IntN(2) == 0 {
+			if _, err := f.WriteAt(buf, off); err != nil {
+				continue
+			}
+			w.Stats.WriteOps.Add(1)
+			w.Stats.WriteBytes.Add(ioSize)
+		} else {
+			if _, err := f.ReadAt(buf, off); err != nil && err != io.EOF {
+				continue
+			}
+			w.Stats.ReadOps.Add(1)
+			w.Stats.ReadBytes.Add(ioSize)
+		}
+	}
 }
 
 func (w *Worker) runBandwidth(ctx context.Context, cmd protocol.PhaseCommand, doWrite, doRead bool) error {

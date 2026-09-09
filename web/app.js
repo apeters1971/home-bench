@@ -9,6 +9,7 @@ const PHASE_LABELS = {
   write_bw: "Write BW",
   read_bw: "Read BW",
   read_write: "Read+Write",
+  riops: "RIOPS",
   final_delete: "Final Delete",
   stopped: "Stopped",
   idle: "Idle",
@@ -26,6 +27,7 @@ const PHASE_BANDS = {
   write_bw:     { fill: "rgba(71, 85, 105, 0.14)",  stroke: "#334155", label: "Write BW" },
   read_bw:      { fill: "rgba(15, 118, 110, 0.12)", stroke: "#0f766e", label: "Read BW" },
   read_write:   { fill: "rgba(202, 138, 4, 0.14)",  stroke: "#a16207", label: "R+W" },
+  riops:        { fill: "rgba(67, 56, 202, 0.12)",  stroke: "#4338ca", label: "RIOPS" },
   final_delete: { fill: "rgba(185, 28, 28, 0.12)",  stroke: "#b91c1c", label: "Final Del" },
 };
 
@@ -33,7 +35,7 @@ const MiB = 1024 * 1024;
 
 const state = {
   snapshot: null,
-  phaseOrder: ["create", "delete", "write_bw", "read_bw", "read_write", "final_delete"],
+  phaseOrder: ["create", "delete", "write_bw", "read_bw", "read_write", "riops", "final_delete"],
   hover: null, // { canvasId, index }
   histHover: null, // { canvasId, index, x, y }
 };
@@ -135,6 +137,7 @@ function estimatedRuntime(cfg, spans) {
   if (on("write_bw")) addRamp("Write BW", 10);
   if (on("read_bw")) addRamp("Read BW", 10);
   if (on("read_write")) addRamp("Read+Write", 10);
+  if (on("riops")) addRamp("RIOPS", 1);
   if (on("final_delete")) addRamp("Final Delete", 11);
 
   if (softwareEnabled(cfg) && on("software_cold")) {
@@ -550,6 +553,41 @@ const DURATION_LABEL_PHASES = new Set([
   "untar",
 ]);
 
+function maxSumInPhases(history, spans, phases, keys) {
+  const want = new Set(phases);
+  let max = 0;
+  let any = false;
+  for (const span of spans || []) {
+    if (!want.has(span.phase)) continue;
+    const start = new Date(span.start).getTime();
+    const end = span.end ? new Date(span.end).getTime() : Date.now();
+    for (const pt of history || []) {
+      const t = sampleTime(pt);
+      if (t < start || t > end) continue;
+      let sum = 0;
+      for (const key of keys) sum += Number(pt[key]) || 0;
+      if (sum > max) max = sum;
+      if (sum > 0) any = true;
+    }
+  }
+  return any ? max : null;
+}
+
+function phaseChartEndLabel(span, history, cfg, isBytes, bwFiles) {
+  if (!span?.end) return null;
+  if (span.phase === "riops" && !isBytes) {
+    const peak = maxSumInPhases(history, [span], ["riops"], ["write_iops", "read_iops"]);
+    return peak != null ? formatOpsRate(peak) : null;
+  }
+  const att = phaseAttainment(span, history, cfg, isBytes, bwFiles);
+  if (att != null) return `${Math.round(Math.min(100, att))}%`;
+  if (DURATION_LABEL_PHASES.has(span.phase)) {
+    const ms = new Date(span.end).getTime() - new Date(span.start).getTime();
+    return formatPhaseDuration(ms);
+  }
+  return null;
+}
+
 const LATENCY_RESULT_SPECS = [
   ["Create", "create"],
   ["Delete", "delete"],
@@ -575,18 +613,6 @@ function latencyEdgesForKey(snap, key) {
     return snap.latency_long_edges_us;
   }
   return snap.latency_edges_us || [];
-}
-
-// Same value drawn at the end of a finished phase band on the charts.
-function phaseChartEndLabel(span, history, cfg, isBytes, bwFiles) {
-  if (!span?.end) return null;
-  const att = phaseAttainment(span, history, cfg, isBytes, bwFiles);
-  if (att != null) return `${Math.round(Math.min(100, att))}%`;
-  if (DURATION_LABEL_PHASES.has(span.phase)) {
-    const ms = new Date(span.end).getTime() - new Date(span.start).getTime();
-    return formatPhaseDuration(ms);
-  }
-  return null;
 }
 
 function formatOpsRate(n) {
@@ -629,12 +655,17 @@ function resultsPerformanceRows(snap) {
     ["R+W write bandwidth", ["read_write"], ["write_bps"], formatRate],
     ["R+W read bandwidth", ["read_write"], ["read_bps"], formatRate],
   ];
-  return specs
+  const rows = specs
     .map(([title, phases, keys, fmt]) => {
       const peak = maxInPhases(history, spans, phases, keys);
       return { title, peak, value: peak == null ? "—" : fmt(peak) };
     })
     .filter((r) => r.peak != null && r.peak > 0);
+  const riopsPeak = maxSumInPhases(history, spans, ["riops"], ["write_iops", "read_iops"]);
+  if (riopsPeak != null && riopsPeak > 0) {
+    rows.push({ title: "RIOPS (R+W 4KiB)", peak: riopsPeak, value: formatOpsRate(riopsPeak) });
+  }
+  return rows;
 }
 
 function resultsPhaseRows(snap) {
@@ -1267,6 +1298,8 @@ function actualForPhase(phase, pt, isBytes) {
     case "read_bw":
       return Number(pt.read_iops) || 0;
     case "read_write":
+      return (Number(pt.write_iops) || 0) + (Number(pt.read_iops) || 0);
+    case "riops":
       return (Number(pt.write_iops) || 0) + (Number(pt.read_iops) || 0);
     default:
       return 0;

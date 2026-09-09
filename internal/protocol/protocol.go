@@ -20,6 +20,7 @@ const (
 	PhaseWriteBW        Phase = "write_bw"
 	PhaseReadBW         Phase = "read_bw"
 	PhaseReadWrite      Phase = "read_write"
+	PhaseRIOPS          Phase = "riops"
 	PhaseFinalDelete    Phase = "final_delete"
 	PhaseStopped        Phase = "stopped"
 )
@@ -32,6 +33,10 @@ const (
 	BandwidthFileSize = 64 * 1024 * 1024 // 64 MiB
 	// CreateFileSize is the size used during create/delete IOPS phases.
 	CreateFileSize = 4096
+	// RIOPSFileSize is the sparse file each client uses for random 4 KiB IOPS.
+	RIOPSFileSize = 1 << 30 // 1 GiB
+	// RIOPSIOSize is the transfer size for random read/write IOPS.
+	RIOPSIOSize = 4096
 	// MetricsInterval is the baseline client metrics push period (small fleets).
 	MetricsInterval = time.Second
 	// MetricsTargetAggregateHz keeps total metrics messages/sec roughly constant
@@ -376,6 +381,7 @@ var PhaseOrder = []Phase{
 	PhaseWriteBW,
 	PhaseReadBW,
 	PhaseReadWrite,
+	PhaseRIOPS,
 	PhaseFinalDelete,
 }
 
@@ -419,6 +425,8 @@ func PhaseLabel(p Phase) string {
 		return "Read BW"
 	case PhaseReadWrite:
 		return "Read+Write"
+	case PhaseRIOPS:
+		return "RIOPS"
 	case PhaseFinalDelete:
 		return "Final Delete"
 	case PhaseStopped:

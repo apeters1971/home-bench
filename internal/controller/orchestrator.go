@@ -638,6 +638,13 @@ func (o *Orchestrator) run(ctx context.Context, cfg protocol.Config, nClients in
 		}
 	}
 
+	// 5b) Random 4 KiB IOPS against a per-client 1 GiB sparse file (one step).
+	if cfg.PhaseSelected(protocol.PhaseRIOPS) {
+		if err := o.sendAndWait(ctx, protocol.PhaseRIOPS, 100, 0, 0, protocol.RIOPSFileSize, step); err != nil {
+			return
+		}
+	}
+
 	// 6) Final delete (paced ramp), then forced wipe of anything left past the window.
 	if cfg.PhaseSelected(protocol.PhaseFinalDelete) {
 		if err := o.runRamp(ctx, protocol.PhaseFinalDelete, deleteRate, 0, step); err != nil {
