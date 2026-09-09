@@ -37,7 +37,7 @@ Open `http://CONTROLLER:8080`.
 | Write BW | 10→100% | same | Rewrites paths as 64 MiB files |
 | Read BW | 10→100% | same | Reads those files |
 | Read+Write | 10→100% | same | Concurrent read and write at their configured rates |
-| RIOPS | 100% (5× step) | 5 × step | 1 GiB sparse file; sequential random 4 KiB direct writes, then reads |
+| RIOPS | 100% (5× step) | 5 × step | 1 GiB sparse file; sequential random 4 KiB direct writes, then reads. Optional global write/read IOPS ceilings (`random_write_iops` / `random_read_iops`) are split per client; 0/empty = unlimited. |
 | Final Delete | 10→100% (+ extra 100%) | same | Removes remaining files |
 
 4. **Stop** cancels the run and tells every client to delete `prefix/testname/hostname/`.

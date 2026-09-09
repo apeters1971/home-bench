@@ -142,7 +142,7 @@ Phases appear as buttons above **Start** / **Stop**. Click to enable/disable for
 | Delete | Delete IOPS (paths kept for bandwidth phases) |
 | Write / Read BW | Bandwidth — 64 MiB files |
 | Read+Write | Overlapped R+W at configured rates |
-| RIOPS | 5× phase step: 1 GiB sparse file, then sequential random 4 KiB direct writes, then reads (IOPS on the timeline) |
+| RIOPS | 5× phase step: 1 GiB sparse file, then sequential random 4 KiB direct writes, then reads (IOPS on the timeline). Optional global write/read IOPS ceilings are split per client; empty/0 = unlimited. |
 | Final delete | Paced delete, then force wipe of host trees |
 
 Orange/optional software phases only appear when the corresponding URLs/commands are configured in the UI.

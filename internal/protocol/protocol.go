@@ -87,6 +87,10 @@ type Config struct {
 	FileWriteBandwidth float64  `json:"file_write_bandwidth"` // bytes/sec global
 	FileReadBandwidth  float64  `json:"file_read_bandwidth"`  // bytes/sec global
 	PhaseStepSeconds   float64  `json:"phase_step_seconds"`   // seconds at each 10% ramp step
+	// RandomWriteIOPS / RandomReadIOPS are optional global RIOPS ceilings (ops/s).
+	// Zero or unset = unlimited (clients run as fast as possible).
+	RandomWriteIOPS float64 `json:"random_write_iops,omitempty"`
+	RandomReadIOPS  float64 `json:"random_read_iops,omitempty"`
 	PackageURL         string   `json:"package_url"`          // tarball URL for software phases
 	StartupCommand     string   `json:"startup_command"`      // shell command run from <prefix>/<test>/software
 	GitCloneURL        string   `json:"git_clone_url"`        // optional; controller bundles once, clients clone from software/

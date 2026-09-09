@@ -286,6 +286,8 @@ function applyConfigForm(cfg) {
   form.file_write_bandwidth_mib.value = ((cfg.file_write_bandwidth || 0) / MiB).toFixed(1);
   form.file_read_bandwidth_mib.value = ((cfg.file_read_bandwidth || 0) / MiB).toFixed(1);
   form.phase_step_seconds.value = cfg.phase_step_seconds ?? 30;
+  form.random_write_iops.value = cfg.random_write_iops > 0 ? cfg.random_write_iops : "";
+  form.random_read_iops.value = cfg.random_read_iops > 0 ? cfg.random_read_iops : "";
   form.package_url.value = cfg.package_url || "";
   form.startup_command.value = cfg.startup_command || "";
   form.git_clone_url.value = cfg.git_clone_url || "";
@@ -1276,6 +1278,12 @@ function expectedAtTime(t, spans, cfg, isBytes, bwFiles) {
     if (span.phase === "final_delete") {
       return isBytes ? 0 : finalDeleteExpectedOps(t, span, cfg, bwFiles || 0);
     }
+    if (span.phase === "riops") {
+      if (isBytes) return 0;
+      const mid = start + (end - start) / 2;
+      if (t < mid) return Number(cfg.random_write_iops) || 0;
+      return Number(cfg.random_read_iops) || 0;
+    }
     const steps = phaseRampSteps(span.phase);
     if (!steps.length) return 0;
     const idx = Math.min(steps.length - 1, Math.max(0, Math.floor((t - start) / stepMs)));
@@ -1726,6 +1734,8 @@ async function saveConfig(ev) {
     file_write_bandwidth: Number(form.file_write_bandwidth_mib.value) * MiB,
     file_read_bandwidth: Number(form.file_read_bandwidth_mib.value) * MiB,
     phase_step_seconds: Number(form.phase_step_seconds.value),
+    random_write_iops: Number(form.random_write_iops.value) || 0,
+    random_read_iops: Number(form.random_read_iops.value) || 0,
     package_url: form.package_url.value.trim(),
     startup_command: form.startup_command.value.trim(),
     git_clone_url: form.git_clone_url.value.trim(),
@@ -1951,6 +1961,8 @@ function downloadReport() {
     <p class="kv"><span>Delete rate</span><strong class="mono">${escapeHTML(String(cfg.file_deletion_rate ?? "—"))} files/s</strong></p>
     <p class="kv"><span>Write bandwidth</span><strong class="mono">${escapeHTML(((cfg.file_write_bandwidth || 0) / MiB).toFixed(1))} MiB/s</strong></p>
     <p class="kv"><span>Read bandwidth</span><strong class="mono">${escapeHTML(((cfg.file_read_bandwidth || 0) / MiB).toFixed(1))} MiB/s</strong></p>
+    <p class="kv"><span>Random write IOPS</span><strong class="mono">${cfg.random_write_iops > 0 ? escapeHTML(String(cfg.random_write_iops)) + " /s" : "unlimited"}</strong></p>
+    <p class="kv"><span>Random read IOPS</span><strong class="mono">${cfg.random_read_iops > 0 ? escapeHTML(String(cfg.random_read_iops)) + " /s" : "unlimited"}</strong></p>
     <p class="kv"><span>Package URL</span><strong class="mono">${escapeHTML(cfg.package_url || "—")}</strong></p>
     <p class="kv"><span>Startup command</span><strong class="mono">${escapeHTML(cfg.startup_command || "—")}</strong></p>
     <p class="kv"><span>GIT Clone</span><strong class="mono">${escapeHTML(cfg.git_clone_url || "—")}</strong></p>

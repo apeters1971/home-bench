@@ -105,6 +105,14 @@
               Phase step duration <span class="hint">seconds at each 10% step</span>
               <input name="phase_step_seconds" type="number" min="1" step="any" required />
             </label>
+            <label>
+              Random write IOPS <span class="hint">optional ceiling · 0 / empty = unlimited</span>
+              <input name="random_write_iops" type="number" min="0" step="any" placeholder="unlimited" />
+            </label>
+            <label>
+              Random read IOPS <span class="hint">optional ceiling · 0 / empty = unlimited</span>
+              <input name="random_read_iops" type="number" min="0" step="any" placeholder="unlimited" />
+            </label>
           </div>
           <label>
             Package URL <span class="hint">optional · controller unpacks once into each &lt;prefix&gt;/&lt;test&gt;/software</span>

@@ -107,6 +107,9 @@ func (o *Orchestrator) SetConfig(cfg protocol.Config) error {
 	if cfg.FileWriteBandwidth <= 0 || cfg.FileReadBandwidth <= 0 {
 		return fmt.Errorf("bandwidth values must be > 0")
 	}
+	if cfg.RandomWriteIOPS < 0 || cfg.RandomReadIOPS < 0 {
+		return fmt.Errorf("random write/read IOPS ceilings must be >= 0 (0 = unlimited)")
+	}
 	if cfg.PhaseStepSeconds <= 0 {
 		cfg.PhaseStepSeconds = protocol.DefaultPhaseStepDuration.Seconds()
 	}
@@ -639,9 +642,18 @@ func (o *Orchestrator) run(ctx context.Context, cfg protocol.Config, nClients in
 	}
 
 	// 5b) Random 4 KiB IOPS against a per-client 1 GiB sparse file (5× phase step).
+	// Optional global ceilings are split per client; 0 = unlimited.
 	if cfg.PhaseSelected(protocol.PhaseRIOPS) {
 		riopsDur := step * protocol.RIOPSDurationSteps
-		if err := o.sendAndWait(ctx, protocol.PhaseRIOPS, 100, 0, 0, protocol.RIOPSFileSize, riopsDur); err != nil {
+		riopsWrite := 0.0
+		riopsRead := 0.0
+		if cfg.RandomWriteIOPS > 0 {
+			riopsWrite = o.perClient(cfg.RandomWriteIOPS, nClients)
+		}
+		if cfg.RandomReadIOPS > 0 {
+			riopsRead = o.perClient(cfg.RandomReadIOPS, nClients)
+		}
+		if err := o.sendAndWait(ctx, protocol.PhaseRIOPS, 100, riopsWrite, riopsRead, protocol.RIOPSFileSize, riopsDur); err != nil {
 			return
 		}
 	}
