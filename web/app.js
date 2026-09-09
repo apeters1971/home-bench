@@ -553,31 +553,38 @@ const DURATION_LABEL_PHASES = new Set([
   "untar",
 ]);
 
-function maxSumInPhases(history, spans, phases, keys) {
-  const want = new Set(phases);
-  let max = 0;
-  let any = false;
+/** Mean of `key` over the first or second half of each matching phase span. */
+function meanInPhaseHalf(history, spans, phase, key, half) {
+  let sum = 0;
+  let n = 0;
   for (const span of spans || []) {
-    if (!want.has(span.phase)) continue;
+    if (span.phase !== phase || !span.end) continue;
     const start = new Date(span.start).getTime();
-    const end = span.end ? new Date(span.end).getTime() : Date.now();
+    const end = new Date(span.end).getTime();
+    if (!(end > start)) continue;
+    const mid = start + (end - start) / 2;
+    const w0 = half === "first" ? start : mid;
+    const w1 = half === "first" ? mid : end;
     for (const pt of history || []) {
       const t = sampleTime(pt);
-      if (t < start || t > end) continue;
-      let sum = 0;
-      for (const key of keys) sum += Number(pt[key]) || 0;
-      if (sum > max) max = sum;
-      if (sum > 0) any = true;
+      if (t < w0 || t >= w1) continue;
+      sum += Number(pt[key]) || 0;
+      n++;
     }
   }
-  return any ? max : null;
+  return n > 0 ? sum / n : null;
 }
 
 function phaseChartEndLabel(span, history, cfg, isBytes, bwFiles) {
   if (!span?.end) return null;
   if (span.phase === "riops" && !isBytes) {
-    const peak = maxSumInPhases(history, [span], ["riops"], ["write_iops", "read_iops"]);
-    return peak != null ? formatOpsRate(peak) : null;
+    const w = meanInPhaseHalf(history, [span], "riops", "write_iops", "first");
+    const r = meanInPhaseHalf(history, [span], "riops", "read_iops", "second");
+    if (w == null && r == null) return null;
+    const parts = [];
+    if (w != null) parts.push(`W ${formatOpsRate(w)}`);
+    if (r != null) parts.push(`R ${formatOpsRate(r)}`);
+    return parts.join(" · ");
   }
   const att = phaseAttainment(span, history, cfg, isBytes, bwFiles);
   if (att != null) return `${Math.round(Math.min(100, att))}%`;
@@ -661,9 +668,13 @@ function resultsPerformanceRows(snap) {
       return { title, peak, value: peak == null ? "—" : fmt(peak) };
     })
     .filter((r) => r.peak != null && r.peak > 0);
-  const riopsPeak = maxSumInPhases(history, spans, ["riops"], ["write_iops", "read_iops"]);
-  if (riopsPeak != null && riopsPeak > 0) {
-    rows.push({ title: "RIOPS (R+W 4KiB)", peak: riopsPeak, value: formatOpsRate(riopsPeak) });
+  const riopsWrite = meanInPhaseHalf(history, spans, "riops", "write_iops", "first");
+  const riopsRead = meanInPhaseHalf(history, spans, "riops", "read_iops", "second");
+  if (riopsWrite != null && riopsWrite > 0) {
+    rows.push({ title: "RIOPS write (4KiB)", peak: riopsWrite, value: formatOpsRate(riopsWrite) });
+  }
+  if (riopsRead != null && riopsRead > 0) {
+    rows.push({ title: "RIOPS read (4KiB)", peak: riopsRead, value: formatOpsRate(riopsRead) });
   }
   return rows;
 }
@@ -777,7 +788,7 @@ function renderResults(snap) {
       </tr>`
           )
           .join("")
-      : `<tr><td colspan="2">No peak rates yet</td></tr>`;
+      : `<tr><td colspan="2">No rates yet</td></tr>`;
   }
 }
 
@@ -820,7 +831,7 @@ function resultsSummaryHTML(snap) {
 
   const perfTable = perfRows.length
     ? `<table>
-      <thead><tr><th>Metric</th><th>Peak</th></tr></thead>
+      <thead><tr><th>Metric</th><th>Rate</th></tr></thead>
       <tbody>${perfRows
         .map(
           (r) => `<tr>
@@ -830,7 +841,7 @@ function resultsSummaryHTML(snap) {
         )
         .join("")}</tbody>
     </table>`
-    : "<p class='muted'>No peak rates</p>";
+    : "<p class='muted'>No rates</p>";
 
   return `<h2>Results</h2>
   <div class="grid">
