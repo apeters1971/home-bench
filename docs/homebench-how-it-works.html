@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Homebench — How it works</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --ink: #14201c;
+      --muted: #5c6b64;
+      --line: #c9d4ce;
+      --panel: rgba(255, 255, 255, 0.9);
+      --accent: #0f7a5f;
+      --accent-soft: #d6f0e7;
+      --read: #1f5fbf;
+      --delete: #b45309;
+      --font: "Sora", sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      font-family: var(--font);
+      color: var(--ink);
+      background: #e8efe9;
+    }
+    body {
+      background:
+        radial-gradient(900px 420px at 12% -10%, rgba(15, 122, 95, 0.16), transparent 60%),
+        radial-gradient(700px 380px at 90% 0%, rgba(31, 95, 191, 0.10), transparent 55%),
+        linear-gradient(180deg, #e8efe9, #f4f7f4 45%, #eef3ef);
+    }
+    .deck {
+      height: 100%;
+      display: grid;
+      place-items: center;
+      padding: 2rem;
+    }
+    .slide {
+      display: none;
+      width: min(1100px, 100%);
+      min-height: min(620px, calc(100vh - 6rem));
+      padding: 3rem 3.25rem;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+    .slide.active { display: flex; }
+    .eyebrow {
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 600;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(2.2rem, 4vw, 3.2rem);
+      line-height: 1.1;
+      letter-spacing: -0.03em;
+    }
+    h2 {
+      margin: 0;
+      font-size: clamp(1.7rem, 3vw, 2.3rem);
+      letter-spacing: -0.02em;
+    }
+    .lede {
+      margin: 0;
+      max-width: 42rem;
+      font-size: 1.25rem;
+      line-height: 1.45;
+      color: var(--muted);
+    }
+    ul {
+      margin: 0;
+      padding-left: 1.15rem;
+      font-size: 1.15rem;
+      line-height: 1.55;
+    }
+    li + li { margin-top: 0.45rem; }
+    code, .mono {
+      font-family: var(--mono);
+      font-size: 0.92em;
+    }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.25rem;
+      margin-top: 0.5rem;
+    }
+    .card {
+      background: #f7faf8;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 1.1rem 1.2rem;
+    }
+    .card h3 {
+      margin: 0 0 0.55rem;
+      font-size: 1rem;
+      color: var(--accent);
+    }
+    .card p, .card li {
+      margin: 0;
+      font-size: 1rem;
+      color: var(--ink);
+      line-height: 1.45;
+    }
+    .path {
+      font-family: var(--mono);
+      font-size: 0.98rem;
+      background: #14201c;
+      color: #e8efe9;
+      border-radius: 10px;
+      padding: 0.9rem 1rem;
+      line-height: 1.55;
+      overflow-x: auto;
+    }
+    .path .share { color: #7ddeb8; }
+    .path .host { color: #9ec5ff; }
+    .phases {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 0.65rem 1.25rem;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .phases li {
+      display: grid;
+      grid-template-columns: 9.5rem 1fr;
+      gap: 0.75rem;
+      align-items: baseline;
+      margin: 0;
+      font-size: 1.02rem;
+    }
+    .phases .name {
+      font-family: var(--mono);
+      font-weight: 600;
+      font-size: 0.86rem;
+      color: var(--accent);
+    }
+    .phases .opt .name { color: var(--delete); }
+    .nav {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.85rem 1.5rem;
+      font-family: var(--mono);
+      font-size: 0.85rem;
+      color: var(--muted);
+      background: rgba(244, 247, 244, 0.85);
+      border-top: 1px solid var(--line);
+      backdrop-filter: blur(8px);
+    }
+    .nav button {
+      font: inherit;
+      border: 1px solid var(--line);
+      background: white;
+      color: var(--ink);
+      border-radius: 8px;
+      padding: 0.4rem 0.85rem;
+      cursor: pointer;
+    }
+    .nav button:disabled {
+      opacity: 0.4;
+      cursor: default;
+    }
+    .title-slide {
+      justify-content: flex-end;
+      padding-bottom: 4rem;
+    }
+    .title-slide .mark {
+      width: 14px;
+      height: 14px;
+      border-radius: 4px;
+      background: var(--accent);
+      margin-bottom: 1rem;
+    }
+    @media (max-width: 800px) {
+      .slide { padding: 1.5rem; min-height: auto; }
+      .grid-2, .phases { grid-template-columns: 1fr; }
+      .phases li { grid-template-columns: 1fr; gap: 0.15rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="deck">
+
+    <section class="slide title-slide active" data-i="0">
+      <div class="mark"></div>
+      <p class="eyebrow">Homebench</p>
+      <h1>How the benchmark works</h1>
+      <p class="lede">
+        A distributed stress harness for shared filesystems:
+        one controller orchestrates many clients that create, delete,
+        read, and write on a common mount — then reports IOPS, bandwidth, and latency.
+      </p>
+    </section>
+
+    <section class="slide" data-i="1">
+      <p class="eyebrow">Architecture</p>
+      <h2>Controller · UI · clients</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Controller</h3>
+          <p>Holds config, drives phase order, aggregates metrics, serves the Web UI (default <span class="mono">:8080</span>).</p>
+        </div>
+        <div class="card">
+          <h3>Web UI</h3>
+          <p>Live WebSocket snapshot: clients, charts, latency histograms, results, export.</p>
+        </div>
+        <div class="card">
+          <h3>Clients</h3>
+          <p>Register over WebSocket, receive phase commands, run IO on the shared FS, push metrics.</p>
+        </div>
+        <div class="card">
+          <h3>Data path</h3>
+          <p>IO goes to the filesystem, not through the controller. Prefix = <span class="mono">hash(hostname) % N</span>.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-i="2">
+      <p class="eyebrow">Layout</p>
+      <h2>Where work lands on the shared FS</h2>
+      <div class="path">
+<span class="share">&lt;prefix&gt;/&lt;test&gt;/software/</span>     shared assets (package, git bundle, archive)
+<span class="host">&lt;prefix&gt;/&lt;test&gt;/&lt;hostname&gt;/</span>  private tree per client
+  ├─ git/ · untar/             timed software ops
+  └─ shards / files            create · delete · R/W
+      </div>
+      <ul>
+        <li>Controller prepares shared <span class="mono">software/</span> once (unpack / bundle / download).</li>
+        <li>Clients time clone / untar into their own <span class="mono">&lt;hostname&gt;/</span> dirs.</li>
+        <li>Hostname can be overridden with <span class="mono">-hostname</span> — that string names the private tree.</li>
+      </ul>
+    </section>
+
+    <section class="slide" data-i="3">
+      <p class="eyebrow">Run flow</p>
+      <h2>Phases in order</h2>
+      <ul class="phases">
+        <li class="opt"><span class="name">Software cold/warm</span><span>Startup command from shared package</span></li>
+        <li class="opt"><span class="name">Git clone</span><span>Clone from shared <span class="mono">repo.bundle</span></span></li>
+        <li class="opt"><span class="name">Untar</span><span><span class="mono">tar xvf</span> shared archive</span></li>
+        <li><span class="name">Create</span><span>Create IOPS — 4&nbsp;KiB files</span></li>
+        <li><span class="name">Delete</span><span>Delete IOPS (paths kept for BW)</span></li>
+        <li><span class="name">Write / Read</span><span>Bandwidth — 64&nbsp;MiB files</span></li>
+        <li><span class="name">Read+Write</span><span>Overlapped R+W at target rates</span></li>
+        <li><span class="name">RIOPS</span><span>1&nbsp;GiB sparse · sequential random 4&nbsp;KiB direct W then R (5× step)</span></li>
+        <li><span class="name">Final delete</span><span>Paced delete, then force wipe</span></li>
+      </ul>
+      <p class="lede" style="font-size:1rem;margin-top:0.5rem">Orange labels are optional; IO phases always run.</p>
+    </section>
+
+    <section class="slide" data-i="4">
+      <p class="eyebrow">Load model</p>
+      <h2>Ramps and rates</h2>
+      <ul>
+        <li>You set <strong>global</strong> create/delete rates and write/read bandwidth.</li>
+        <li>Each selected client gets <span class="mono">global ÷ N participants</span>.</li>
+        <li>Every IO phase ramps <strong>10% → 100%</strong> in 10% steps (default 30&nbsp;s/step), except <strong>RIOPS</strong> (5× step: writes then reads).</li>
+        <li>Delete adds an extra 100% sweep; final delete ends with a forced host-tree wipe.</li>
+        <li>Losing a run participant fails the run. Selection is locked while running.</li>
+      </ul>
+    </section>
+
+    <section class="slide" data-i="5">
+      <p class="eyebrow">Output</p>
+      <h2>What you read back</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Charts</h3>
+          <p>IOPS and bandwidth vs expected grey lines; phase overlays; 60‑minute history.</p>
+        </div>
+        <div class="card">
+          <h3>Latency</h3>
+          <p>Histograms for create, delete, 64&nbsp;MiB R/W, software, git, untar — plus failures.</p>
+        </div>
+        <div class="card">
+          <h3>Results</h3>
+          <p>Phase efficiency vs target, peaks, p95/p99; JSON and printable report export.</p>
+        </div>
+        <div class="card">
+          <h3>Header</h3>
+          <p><strong>Startup</strong> = first→last client connect span; <strong>Elapsed</strong> = run wall time.</p>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <div class="nav">
+    <button type="button" id="prev" disabled>← Prev</button>
+    <span id="pos">1 / 6</span>
+    <button type="button" id="next">Next →</button>
+  </div>
+
+  <script>
+    const slides = [...document.querySelectorAll(".slide")];
+    let i = 0;
+    const pos = document.getElementById("pos");
+    const prev = document.getElementById("prev");
+    const next = document.getElementById("next");
+
+    function show(n) {
+      i = Math.max(0, Math.min(slides.length - 1, n));
+      slides.forEach((s, k) => s.classList.toggle("active", k === i));
+      pos.textContent = `${i + 1} / ${slides.length}`;
+      prev.disabled = i === 0;
+      next.disabled = i === slides.length - 1;
+      history.replaceState(null, "", `#${i + 1}`);
+    }
+
+    prev.addEventListener("click", () => show(i - 1));
+    next.addEventListener("click", () => show(i + 1));
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowRight" || e.key === " " || e.key === "PageDown") {
+        e.preventDefault();
+        show(i + 1);
+      } else if (e.key === "ArrowLeft" || e.key === "PageUp") {
+        e.preventDefault();
+        show(i - 1);
+      } else if (e.key === "Home") {
+        show(0);
+      } else if (e.key === "End") {
+        show(slides.length - 1);
+      }
+    });
+
+    const fromHash = parseInt(location.hash.slice(1), 10);
+    show(Number.isFinite(fromHash) && fromHash >= 1 ? fromHash - 1 : 0);
+  </script>
+</body>
+</html>

@@ -37,6 +37,8 @@ const (
 	RIOPSFileSize = 1 << 30 // 1 GiB
 	// RIOPSIOSize is the transfer size for random read/write IOPS.
 	RIOPSIOSize = 4096
+	// RIOPSDurationSteps is how many phase_step_seconds the RIOPS phase runs.
+	RIOPSDurationSteps = 5
 	// MetricsInterval is the baseline client metrics push period (small fleets).
 	MetricsInterval = time.Second
 	// MetricsTargetAggregateHz keeps total metrics messages/sec roughly constant

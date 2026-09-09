@@ -638,9 +638,10 @@ func (o *Orchestrator) run(ctx context.Context, cfg protocol.Config, nClients in
 		}
 	}
 
-	// 5b) Random 4 KiB IOPS against a per-client 1 GiB sparse file (one step).
+	// 5b) Random 4 KiB IOPS against a per-client 1 GiB sparse file (5× phase step).
 	if cfg.PhaseSelected(protocol.PhaseRIOPS) {
-		if err := o.sendAndWait(ctx, protocol.PhaseRIOPS, 100, 0, 0, protocol.RIOPSFileSize, step); err != nil {
+		riopsDur := step * protocol.RIOPSDurationSteps
+		if err := o.sendAndWait(ctx, protocol.PhaseRIOPS, 100, 0, 0, protocol.RIOPSFileSize, riopsDur); err != nil {
 			return
 		}
 	}

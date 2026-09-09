@@ -137,7 +137,7 @@ function estimatedRuntime(cfg, spans) {
   if (on("write_bw")) addRamp("Write BW", 10);
   if (on("read_bw")) addRamp("Read BW", 10);
   if (on("read_write")) addRamp("Read+Write", 10);
-  if (on("riops")) addRamp("RIOPS", 1);
+  if (on("riops")) addRamp("RIOPS", 5);
   if (on("final_delete")) addRamp("Final Delete", 11);
 
   if (softwareEnabled(cfg) && on("software_cold")) {
